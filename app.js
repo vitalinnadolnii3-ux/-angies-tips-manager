@@ -1,15 +1,16 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import { firebaseConfig } from "./firebase-config.js?v=12";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { firebaseConfig, getAuth } from "./firebase-config.js?v=12";
 
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const auth = getAuth(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
 let currentUser = '';
-const LOGIN_PASSWORD = 'angiesroma';
 const SESSION_KEY = 'angiesManagerUser';
 
 const $ = id => document.getElementById(id);
@@ -35,7 +36,7 @@ function resolveUsername(name) {
 function showLogin() {
   $('app').classList.add('hidden');
   $('loginScreen').classList.remove('hidden');
-  $('loginName').focus();
+  $('loginEmail').focus();
 }
 
 function showApp() {
@@ -57,19 +58,27 @@ async function writeLog(action, username = currentUser) {
 }
 
 async function doLogin() {
-  const rawName = $('loginName').value;
+  const email = $('loginEmail').value.trim().toLowerCase();
   const pwd = $('loginPass').value;
-  const normalizedName = normalizeName(rawName);
-  if (!normalizedName) return alert('Inserisci il nome');
+  if (!email) return alert('Inserisci l\'email');
   if (!pwd) return alert('Inserisci la password');
-  if (pwd !== LOGIN_PASSWORD) return alert('Password errata');
-  const username = resolveUsername(normalizedName);
-  if (!username) return alert('Nome non valido');
-
-  currentUser = username;
+  let cred;
+  try {
+    cred = await signInWithEmailAndPassword(auth, email, pwd);
+  } catch (e) {
+    if (e?.code === 'auth/user-not-found' || e?.code === 'auth/invalid-credential') {
+      cred = await createUserWithEmailAndPassword(auth, email, pwd);
+    } else {
+      console.error('Errore login:', e);
+      return alert('Errore login: ' + e.message);
+    }
+  }
+  currentUser = cred.user?.email || email;
   localStorage.setItem(SESSION_KEY, currentUser);
   $('who').textContent = currentUser;
   $('loginPass').value = '';
+  await load();
+  render();
   showApp();
   chatListen();
   writeLog('login');
@@ -77,6 +86,12 @@ async function doLogin() {
 
 async function logout() {
   const userToLog = currentUser;
+  await writeLog('logout', userToLog);
+  try {
+    await signOut(auth);
+  } catch (e) {
+    console.error('Errore logout:', e);
+  }
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
   $('who').textContent = 'Online';
@@ -85,7 +100,6 @@ async function logout() {
     unsub = null;
   }
   showLogin();
-  writeLog('logout', userToLog);
 }
 
 // LOAD DATA FROM FIRESTORE
@@ -129,7 +143,7 @@ function init() {
   $('logoutBtn').onclick = logout;
   $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
   $('loginPass').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
-  $('loginName').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
+  $('loginEmail').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
   $('from').onchange = () => stats();
   $('to').onchange = () => stats();
 }
@@ -556,17 +570,26 @@ function fmt(d) {
 
 // START APP
 window.addEventListener('load', async () => {
-  await load();
   init();
   render();
-  const saved = resolveUsername(localStorage.getItem(SESSION_KEY));
-  if (saved) {
-    currentUser = saved;
-    $('who').textContent = currentUser;
-    showApp();
-    chatListen();
-  } else {
-    localStorage.removeItem(SESSION_KEY);
-    showLogin();
-  }
+  onAuthStateChanged(auth, async user => {
+    if (user) {
+      currentUser = user.email || '';
+      localStorage.setItem(SESSION_KEY, currentUser);
+      $('who').textContent = currentUser;
+      await load();
+      render();
+      showApp();
+      chatListen();
+    } else {
+      localStorage.removeItem(SESSION_KEY);
+      currentUser = '';
+      $('who').textContent = 'Online';
+      if (unsub) {
+        unsub();
+        unsub = null;
+      }
+      showLogin();
+    }
+  });
 });
