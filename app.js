@@ -294,7 +294,10 @@ function shareWhatsApp() {
   let d = data();
   if (!d.date) return alert('Seleziona una data.');
   if (d.total <= 0) return alert('Nessun dato da condividere.');
-  if (d.totalHours <= 0) return alert('Inserisci almeno un\'ora.');
+  if (d.totalHours <= 0) {
+    alert("Inserisci almeno un'ora.");
+    return;
+  }
   
   let message = `📊 *Riepilogo Giornata: ${fmt(d.date)}*\n\n`;
   message += `💰 *Totale Mance:* ${euro(d.total)}\n`;
@@ -312,8 +315,8 @@ function shareWhatsApp() {
   message += `  💳 Carta: ${euro(d.cucinaCard)}\n`;
   message += `  📈 Totale: ${euro(d.cucinaCash + d.cucinaCard)}\n\n`;
   
-  let pricePerHourCash = d.totalHours > 0 ? d.salaCash / d.totalHours : 0;
-  let pricePerHourCard = d.totalHours > 0 ? d.salaCard / d.totalHours : 0;
+  let pricePerHourCash = d.salaCash / d.totalHours;
+  let pricePerHourCard = d.salaCard / d.totalHours;
   let employeesWorked = state.employees
     .map((name, i) => ({ name, hours: d.hours[i] || 0 }))
     .filter(e => e.hours > 0);
