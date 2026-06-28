@@ -12,5 +12,13 @@ Dopo il caricamento vai su Firebase > Firestore Database > Regole e incolla il c
 
 Poi crea un utente in Firebase > Authentication > Users > Add user.
 
+Per la gestione dipendenti admin dall'app:
+- collezione Firestore: `restaurants/angies/employees/{uid}` con campi `email`, `name`, `role`, `enabled`, `createdAt`, `updatedAt`
+- opzionale (consigliato) Callable Functions:
+  - `createEmployeeAuthUser`
+  - `updateEmployeeAuthUser`
+  - `deleteEmployeeAuthUser`
+Se `createEmployeeAuthUser` non è disponibile, la creazione usa fallback client-side con sessione secondaria.
+
 Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7

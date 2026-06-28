@@ -1,24 +1,32 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 import { firebaseConfig, getAuth } from "./firebase-config.js?v=12";
 
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 const auth = getAuth(fbApp);
+const functions = getFunctions(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
 let currentUser = '';
+let currentUserUid = '';
+let currentUserRole = '';
 let hasLoadedSessionData = false;
+let employeesData = [];
+let editingEmployeeId = '';
 const SESSION_KEY = 'angiesManagerUser';
+const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Waiter', 'Kitchen'];
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 const normalizeEmail = s => String(s || '').trim().toLowerCase();
+const isAdmin = () => currentUserRole === 'Admin';
 
 function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
@@ -35,6 +43,37 @@ function resolveUsername(name) {
   return cleaned;
 }
 
+function normalizeRole(role) {
+  const cleaned = String(role || '').trim();
+  return EMPLOYEE_ROLES.includes(cleaned) ? cleaned : '';
+}
+
+function employeeCollection() {
+  return collection(db, 'restaurants', 'angies', 'employees');
+}
+
+function employeeDoc(uid) {
+  return doc(db, 'restaurants', 'angies', 'employees', uid);
+}
+
+async function callEmployeeAdminFunction(name, payload) {
+  const callable = httpsCallable(functions, name);
+  return callable(payload);
+}
+
+async function createAuthUserWithSecondarySession(email, password) {
+  const secondaryName = `employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const secondaryApp = initializeApp(firebaseConfig, secondaryName);
+  const secondaryAuth = getAuth(secondaryApp);
+  try {
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
+    await signOut(secondaryAuth);
+    return cred.user.uid;
+  } finally {
+    await deleteApp(secondaryApp);
+  }
+}
+
 function showLogin() {
   $('app').classList.add('hidden');
   $('loginScreen').classList.remove('hidden');
@@ -44,6 +83,15 @@ function showLogin() {
 function showApp() {
   $('loginScreen').classList.add('hidden');
   $('app').classList.remove('hidden');
+}
+
+function syncEmployeeTabVisibility() {
+  const tabBtn = $('employeeTabBtn');
+  if (!tabBtn) return;
+  tabBtn.classList.toggle('hidden', !isAdmin());
+  if (!isAdmin() && $('employeeManagement').classList.contains('active')) {
+    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+  }
 }
 
 async function writeLog(action, username = currentUser) {
@@ -64,31 +112,12 @@ async function doLogin() {
   const pwd = $('loginPass').value;
   if (!email) return alert('Inserisci l\'email');
   if (!pwd) return alert('Inserisci la password');
-  let cred;
   try {
-    cred = await signInWithEmailAndPassword(auth, email, pwd);
+    await signInWithEmailAndPassword(auth, email, pwd);
   } catch (e) {
-    if (e?.code === 'auth/invalid-credential') {
-      const shouldCreate = confirm('Credenziali non valide o account non esistente. Vuoi creare un nuovo account con questa email?');
-      if (!shouldCreate) return;
-      try {
-        cred = await createUserWithEmailAndPassword(auth, email, pwd);
-      } catch (createErr) {
-        console.error('Errore creazione account:', createErr);
-        return alert('Errore login: ' + createErr.message);
-      }
-    } else {
-      console.error('Errore login:', e);
-      return alert('Errore login: ' + e.message);
-    }
+    console.error('Errore login:', e);
+    return alert('Errore login: ' + e.message);
   }
-  currentUser = cred.user?.email || email;
-  localStorage.setItem(SESSION_KEY, currentUser);
-  $('who').textContent = currentUser;
-  $('loginPass').value = '';
-  showApp();
-  chatListen();
-  writeLog('login');
 }
 
 async function logout() {
@@ -128,6 +157,293 @@ async function load() {
   }
 }
 
+async function loadEmployees() {
+  if (!isAdmin()) {
+    employeesData = [];
+    renderEmployeesTable();
+    return;
+  }
+  try {
+    const snap = await getDocs(employeeCollection());
+    employeesData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
+    renderEmployeesTable();
+  } catch (e) {
+    console.error('Errore caricamento dipendenti:', e);
+    alert('Errore caricamento dipendenti: ' + e.message);
+  }
+}
+
+function clearEmployeeForm() {
+  editingEmployeeId = '';
+  $('employeeName').value = '';
+  $('employeeEmail').value = '';
+  $('employeePassword').value = '';
+  $('employeeRole').value = '';
+  $('employeeSaveBtn').textContent = 'Crea dipendente';
+  $('employeeCancelBtn').classList.add('hidden');
+}
+
+function renderEmployeesTable() {
+  const table = $('employeeList');
+  if (!table) return;
+  if (!isAdmin()) {
+    table.innerHTML = '<tr><td>Accesso consentito solo agli admin.</td></tr>';
+    return;
+  }
+  let html = '<tr><th>Nome</th><th>Email</th><th>Ruolo</th><th>Stato</th><th>Azioni</th></tr>';
+  if (!employeesData.length) {
+    html += '<tr><td colspan="5">Nessun dipendente registrato.</td></tr>';
+    table.innerHTML = html;
+    return;
+  }
+  employeesData.forEach(emp => {
+    const enabled = emp.enabled !== false;
+    const statusClass = enabled ? 'status-enabled' : 'status-disabled';
+    const statusText = enabled ? 'Attivo' : 'Disabilitato';
+    html += `<tr>
+      <td>${esc(emp.name || '-')}</td>
+      <td>${esc(emp.email || '-')}</td>
+      <td>${esc(emp.role || '-')}</td>
+      <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+      <td class="table-actions">
+        <button onclick="editEmployee('${emp.id}')">Modifica</button>
+        <button onclick="toggleEmployeeEnabled('${emp.id}')">${enabled ? 'Disabilita' : 'Abilita'}</button>
+        <button class="danger" onclick="removeEmployee('${emp.id}')">Elimina</button>
+      </td>
+    </tr>`;
+  });
+  table.innerHTML = html;
+}
+
+function validateEmployeePayload({ name, email, role, password, requirePassword = false, ignoreId = '' }) {
+  const normalizedName = normalizeName(name);
+  const normalizedEmail = normalizeEmail(email);
+  const normalizedRole = normalizeRole(role);
+  if (!normalizedName) throw new Error('Nome obbligatorio.');
+  if (!normalizedEmail) throw new Error('Email obbligatoria.');
+  if (!normalizedRole) throw new Error('Ruolo obbligatorio.');
+  if (requirePassword && String(password || '').length < 8) throw new Error('Password minima di 8 caratteri.');
+  const hasDuplicateEmail = employeesData.some(emp => emp.id !== ignoreId && normalizeEmail(emp.email) === normalizedEmail);
+  if (hasDuplicateEmail) throw new Error('Email già associata a un dipendente.');
+  return { normalizedName, normalizedEmail, normalizedRole, normalizedPassword: String(password || '') };
+}
+
+async function upsertEmployeeProfile(uid, data, isCreate = false) {
+  const payload = {
+    name: data.name,
+    email: data.email,
+    role: data.role,
+    enabled: data.enabled !== false,
+    updatedAt: serverTimestamp()
+  };
+  if (isCreate) payload.createdAt = serverTimestamp();
+  await setDoc(employeeDoc(uid), payload, { merge: !isCreate });
+}
+
+async function createEmployee() {
+  if (!isAdmin()) return alert('Solo admin');
+  let data;
+  try {
+    data = validateEmployeePayload({
+      name: $('employeeName').value,
+      email: $('employeeEmail').value,
+      role: $('employeeRole').value,
+      password: $('employeePassword').value,
+      requirePassword: true
+    });
+  } catch (e) {
+    return alert(e.message);
+  }
+
+  let uid = '';
+  try {
+    const fnResult = await callEmployeeAdminFunction('createEmployeeAuthUser', {
+      email: data.normalizedEmail,
+      password: data.normalizedPassword,
+      name: data.normalizedName,
+      role: data.normalizedRole
+    });
+    uid = String(fnResult.data?.uid || '');
+  } catch (e) {
+    uid = '';
+  }
+
+  if (!uid) {
+    try {
+      uid = await createAuthUserWithSecondarySession(data.normalizedEmail, data.normalizedPassword);
+    } catch (e) {
+      console.error('Errore creazione utente auth:', e);
+      return alert('Errore creazione utente: ' + e.message);
+    }
+  }
+
+  try {
+    await upsertEmployeeProfile(uid, {
+      name: data.normalizedName,
+      email: data.normalizedEmail,
+      role: data.normalizedRole,
+      enabled: true
+    }, true);
+    await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedRole}`);
+    clearEmployeeForm();
+    await loadEmployees();
+    alert('Dipendente creato con successo.');
+  } catch (e) {
+    console.error('Errore salvataggio profilo dipendente:', e);
+    alert('Errore salvataggio profilo: ' + e.message);
+  }
+}
+
+async function updateEmployee() {
+  if (!isAdmin()) return alert('Solo admin');
+  const employee = employeesData.find(emp => emp.id === editingEmployeeId);
+  if (!employee) return alert('Dipendente non trovato.');
+
+  let data;
+  try {
+    data = validateEmployeePayload({
+      name: $('employeeName').value,
+      email: $('employeeEmail').value,
+      role: $('employeeRole').value,
+      password: $('employeePassword').value,
+      requirePassword: false,
+      ignoreId: editingEmployeeId
+    });
+  } catch (e) {
+    return alert(e.message);
+  }
+
+  const wantsAuthUpdate = data.normalizedEmail !== normalizeEmail(employee.email) || data.normalizedPassword.length >= 8;
+  if (data.normalizedPassword && data.normalizedPassword.length < 8) {
+    return alert('Nuova password minima di 8 caratteri.');
+  }
+
+  if (wantsAuthUpdate) {
+    try {
+      await callEmployeeAdminFunction('updateEmployeeAuthUser', {
+        uid: employee.id,
+        email: data.normalizedEmail,
+        password: data.normalizedPassword || undefined
+      });
+    } catch (e) {
+      console.error('Errore aggiornamento auth dipendente:', e);
+      return alert('Aggiornamento email/password richiede Cloud Function `updateEmployeeAuthUser` configurata.');
+    }
+  }
+
+  try {
+    await upsertEmployeeProfile(employee.id, {
+      name: data.normalizedName,
+      email: data.normalizedEmail,
+      role: data.normalizedRole,
+      enabled: employee.enabled !== false
+    });
+    await writeLog(`employee_update:${employee.id}`);
+    clearEmployeeForm();
+    await loadEmployees();
+    syncEmployeeTabVisibility();
+    alert('Dipendente aggiornato.');
+  } catch (e) {
+    console.error('Errore aggiornamento dipendente:', e);
+    alert('Errore aggiornamento: ' + e.message);
+  }
+}
+
+window.editEmployee = id => {
+  if (!isAdmin()) return;
+  const employee = employeesData.find(emp => emp.id === id);
+  if (!employee) return;
+  editingEmployeeId = employee.id;
+  $('employeeName').value = employee.name || '';
+  $('employeeEmail').value = employee.email || '';
+  $('employeePassword').value = '';
+  $('employeeRole').value = normalizeRole(employee.role);
+  $('employeeSaveBtn').textContent = 'Salva modifiche';
+  $('employeeCancelBtn').classList.remove('hidden');
+};
+
+window.toggleEmployeeEnabled = async id => {
+  if (!isAdmin()) return alert('Solo admin');
+  const employee = employeesData.find(emp => emp.id === id);
+  if (!employee) return;
+  const nextEnabled = employee.enabled === false;
+  try {
+    await upsertEmployeeProfile(employee.id, {
+      name: employee.name || '',
+      email: normalizeEmail(employee.email),
+      role: normalizeRole(employee.role),
+      enabled: nextEnabled
+    });
+    await writeLog(`employee_${nextEnabled ? 'enable' : 'disable'}:${employee.id}`);
+    await loadEmployees();
+    if (employee.id === currentUserUid && !nextEnabled) {
+      alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
+      await logout();
+    }
+  } catch (e) {
+    console.error('Errore aggiornamento stato dipendente:', e);
+    alert('Errore aggiornamento stato: ' + e.message);
+  }
+};
+
+window.removeEmployee = async id => {
+  if (!isAdmin()) return alert('Solo admin');
+  const employee = employeesData.find(emp => emp.id === id);
+  if (!employee) return;
+  if (!confirm(`Eliminare definitivamente ${employee.name || employee.email}?`)) return;
+  try {
+    await callEmployeeAdminFunction('deleteEmployeeAuthUser', { uid: employee.id });
+  } catch (e) {
+    console.error('Errore cancellazione auth dipendente:', e);
+    return alert('Eliminazione account Auth richiede Cloud Function `deleteEmployeeAuthUser` configurata.');
+  }
+  try {
+    await deleteDoc(employeeDoc(employee.id));
+    await writeLog(`employee_delete:${employee.id}`);
+    if (editingEmployeeId === employee.id) clearEmployeeForm();
+    await loadEmployees();
+  } catch (e) {
+    console.error('Errore cancellazione profilo dipendente:', e);
+    alert('Errore cancellazione profilo: ' + e.message);
+  }
+};
+
+async function loadCurrentUserProfile(user) {
+  currentUser = user.email || '';
+  currentUserUid = user.uid || '';
+  currentUserRole = '';
+
+  try {
+    const profileSnap = await getDoc(employeeDoc(user.uid));
+    if (profileSnap.exists()) {
+      const profile = profileSnap.data();
+      const enabled = profile.enabled !== false;
+      if (!enabled) {
+        alert('Account disabilitato. Contatta un amministratore.');
+        await signOut(auth);
+        return false;
+      }
+      currentUserRole = normalizeRole(profile.role) || 'Waiter';
+    } else {
+      currentUserRole = 'Admin';
+      await upsertEmployeeProfile(user.uid, {
+        name: normalizeName((user.email || '').split('@')[0]) || currentUser,
+        email: currentUser,
+        role: currentUserRole,
+        enabled: true
+      }, true);
+      await writeLog('employee_profile_bootstrap');
+    }
+  } catch (e) {
+    console.error('Errore caricamento profilo utente:', e);
+    alert('Errore caricamento profilo utente: ' + e.message);
+    await signOut(auth);
+    return false;
+  }
+  return true;
+}
+
 // INIT
 function init() {
   $('date').value = today();
@@ -145,6 +461,8 @@ function init() {
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
   $('saveSet').onclick = saveSettings;
+  $('employeeSaveBtn').onclick = () => editingEmployeeId ? updateEmployee() : createEmployee();
+  $('employeeCancelBtn').onclick = clearEmployeeForm;
   $('loginBtn').onclick = doLogin;
   $('logoutBtn').onclick = logout;
   $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
@@ -156,6 +474,10 @@ function init() {
 
 // TAB NAVIGATION
 function tab(id, b) {
+  if (id === 'employeeManagement' && !isAdmin()) {
+    alert('Accesso consentito solo agli admin.');
+    return;
+  }
   document.querySelectorAll('.page').forEach(p => {
     p.classList.remove('active');
     p.style.display = 'none';
@@ -227,6 +549,7 @@ function render() {
   history();
   stats();
   settings();
+  renderEmployeesTable();
 }
 
 // RENDER HOURS TABLE
@@ -577,28 +900,38 @@ function fmt(d) {
 // START APP
 window.addEventListener('load', async () => {
   init();
+  clearEmployeeForm();
   render();
   onAuthStateChanged(auth, async user => {
     if (user) {
-      currentUser = user.email || '';
+      const loadedProfile = await loadCurrentUserProfile(user);
+      if (!loadedProfile) return;
       localStorage.setItem(SESSION_KEY, currentUser);
-      $('who').textContent = currentUser;
+      $('who').textContent = `${currentUser} (${currentUserRole})`;
       if (!hasLoadedSessionData) {
         await load();
         hasLoadedSessionData = true;
       }
+      await loadEmployees();
+      syncEmployeeTabVisibility();
       render();
       showApp();
       chatListen();
+      writeLog('login');
     } else {
       hasLoadedSessionData = false;
       localStorage.removeItem(SESSION_KEY);
       currentUser = '';
+      currentUserUid = '';
+      currentUserRole = '';
+      employeesData = [];
       $('who').textContent = 'Online';
       if (unsub) {
         unsub();
         unsub = null;
       }
+      clearEmployeeForm();
+      syncEmployeeTabVisibility();
       showLogin();
     }
   });

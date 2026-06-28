@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Angie's Manager v14</title>
-  <link rel="stylesheet" href="style.css?v=14">
+  <link rel="stylesheet" href="style.css?v=15">
 </head>
 <body>
   <section id="loginScreen" class="login">
@@ -35,6 +35,7 @@
       <button data-tab="stats">Statistiche</button>
       <button data-tab="chat">Chat</button>
       <button data-tab="settings">Impostazioni</button>
+      <button id="employeeTabBtn" class="hidden" data-tab="employeeManagement">Employee Management</button>
     </nav>
 
     <main>
@@ -119,9 +120,34 @@
           <button id="saveSet">Salva impostazioni</button>
         </div>
       </section>
+
+      <section id="employeeManagement" class="page">
+        <h2>Employee Management</h2>
+        <div class="panel grid">
+          <label>Nome<input id="employeeName" type="text" placeholder="Nome dipendente"></label>
+          <label>Email<input id="employeeEmail" type="email" placeholder="email@azienda.com"></label>
+          <label>Password<input id="employeePassword" type="password" placeholder="Minimo 8 caratteri"></label>
+          <label>Ruolo
+            <select id="employeeRole">
+              <option value="">Seleziona ruolo</option>
+              <option value="Admin">Admin</option>
+              <option value="Manager">Manager</option>
+              <option value="Waiter">Waiter</option>
+              <option value="Kitchen">Kitchen</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="employeeSaveBtn">Crea dipendente</button>
+          <button id="employeeCancelBtn" class="clear hidden">Annulla modifica</button>
+        </div>
+        <div class="panel">
+          <table id="employeeList"></table>
+        </div>
+      </section>
     </main>
   </div>
 
-  <script type="module" src="app.js?v=14"></script>
+  <script type="module" src="app.js?v=15"></script>
 </body>
 </html>
