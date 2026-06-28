@@ -62,8 +62,8 @@ async function callEmployeeAdminFunction(name, payload) {
 }
 
 async function createAuthUserWithSecondarySession(email, password) {
-  const secondaryAppName = `employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
+  const temporaryAppName = `employee-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const secondaryApp = initializeApp(firebaseConfig, temporaryAppName);
   const secondaryAuth = getAuth(secondaryApp);
   try {
     const cred = await createUserWithEmailAndPassword(secondaryAuth, email, password);
@@ -71,6 +71,11 @@ async function createAuthUserWithSecondarySession(email, password) {
     return cred.user.uid;
   } finally {
     await deleteApp(secondaryApp);
+  }
+
+  function deriveNameFromEmail(email) {
+    const localPart = normalizeName(String(email || '').split('@')[0]);
+    return localPart || String(email || '').trim() || 'Unknown';
   }
 }
 
@@ -276,7 +281,7 @@ async function createEmployee() {
       name: data.normalizedName,
       role: data.normalizedRole
     });
-    uid = String(fnResult.data?.uid || '');
+    uid = fnResult.data?.uid ? String(fnResult.data.uid) : '';
   } catch (e) {
     console.warn('Callable createEmployeeAuthUser non disponibile, uso fallback client-side.', e);
     uid = '';
@@ -445,7 +450,7 @@ async function loadCurrentUserProfile(user) {
     } else {
       currentUserRole = 'Waiter';
       await upsertEmployeeProfile(user.uid, {
-        name: normalizeName((user.email || '').split('@')[0]) || user.email || 'Unknown',
+        name: deriveNameFromEmail(user.email),
         email: currentUser,
         role: currentUserRole,
         enabled: true
