@@ -18,6 +18,7 @@ const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+const normalizeEmail = s => String(s || '').trim().toLowerCase();
 
 function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
@@ -59,7 +60,7 @@ async function writeLog(action, username = currentUser) {
 }
 
 async function doLogin() {
-  const email = $('loginEmail').value.trim().toLowerCase();
+  const email = normalizeEmail($('loginEmail').value);
   const pwd = $('loginPass').value;
   if (!email) return alert('Inserisci l\'email');
   if (!pwd) return alert('Inserisci la password');
@@ -67,8 +68,8 @@ async function doLogin() {
   try {
     cred = await signInWithEmailAndPassword(auth, email, pwd);
   } catch (e) {
-    if (e?.code === 'auth/user-not-found') {
-      const shouldCreate = confirm('Account non trovato. Vuoi creare un nuovo account con questa email?');
+    if (e?.code === 'auth/invalid-credential') {
+      const shouldCreate = confirm('Credenziali non valide o account non esistente. Vuoi creare un nuovo account con questa email?');
       if (!shouldCreate) return;
       try {
         cred = await createUserWithEmailAndPassword(auth, email, pwd);
@@ -76,8 +77,6 @@ async function doLogin() {
         console.error('Errore creazione account:', createErr);
         return alert('Errore login: ' + createErr.message);
       }
-    } else if (e?.code === 'auth/invalid-credential') {
-      return alert('Credenziali non valide.');
     } else {
       console.error('Errore login:', e);
       return alert('Errore login: ' + e.message);
@@ -93,21 +92,12 @@ async function doLogin() {
 }
 
 async function logout() {
-  const userToLog = currentUser;
-  let signedOut = false;
-  let logoutError = null;
   try {
     await signOut(auth);
-    signedOut = true;
   } catch (e) {
-    logoutError = e;
     console.error('Errore logout:', e);
+    return alert('Errore logout: ' + (e?.message || 'Logout non riuscito'));
   }
-  if (!signedOut) {
-    await writeLog('logout_failed', userToLog);
-    return alert('Errore logout: ' + (logoutError?.message || 'Logout non riuscito'));
-  }
-  writeLog('logout', userToLog);
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
   $('who').textContent = 'Online';
