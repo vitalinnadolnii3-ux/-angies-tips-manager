@@ -1,22 +1,16 @@
-# Angie's Manager v6 - Login + Chat
+# Angie's Manager v7 definitivo
 
-Questa versione include:
-- Login con Firebase Authentication
-- Database cloud Firestore
-- Mance Cash/Carta separate per Sala e Cucina
-- Storico e statistiche
-- Chat interna in tempo reale
-
-## File da caricare su GitHub
+Carica nella root del repository:
 - index.html
 - style.css
 - app.js
 - firebase-config.js
+- FIRESTORE_RULES.txt
+- README.md
 
-## Prima configurazione Firebase
-1. Crea un progetto su Firebase.
-2. Attiva Authentication → Email/Password.
-3. Attiva Firestore Database.
-4. Crea una Web App.
-5. Copia i dati Firebase dentro `firebase-config.js`.
-6. Carica i file su GitHub.
+Dopo il caricamento vai su Firebase > Firestore Database > Regole e incolla il contenuto di FIRESTORE_RULES.txt.
+
+Poi crea un utente in Firebase > Authentication > Users > Add user.
+
+Apri il sito con:
+https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
