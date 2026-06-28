@@ -1,106 +1,29 @@
-import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore";
-import { firebaseConfig } from "./firebase-config.js?v=9";
-
-const fbApp = initializeApp(firebaseConfig);
-const auth = getAuth(fbApp);
-const db = getFirestore(fbApp);
+// OFFLINE MODE - Usa localStorage invece di Firebase
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
-let state = { employees: NAMES, kitchenPercent: 20, history: [] };
-let user = null;
-let unsub = null;
+let state = { employees: NAMES, kitchenPercent: 20, history: [], chat: [] };
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 
-// SETUP LOGIN - Esegui dopo che DOM è caricato
-window.addEventListener('load', () => {
-  const loginBtn = $('loginBtn');
-  const logoutBtn = $('logoutBtn');
-  
-  if (loginBtn) {
-    loginBtn.addEventListener('click', async () => {
-      try {
-        const errElement = $('err');
-        errElement.textContent = '';
-        const email = $('email').value.trim();
-        const password = $('password').value;
-        
-        if (!email || !password) {
-          errElement.textContent = 'Inserisci email e password';
-          return;
-        }
-        
-        loginBtn.disabled = true;
-        loginBtn.textContent = 'Accesso in corso...';
-        
-        await signInWithEmailAndPassword(auth, email, password);
-      } catch(e) {
-        console.error('Errore login:', e.code, e.message);
-        const errMsg = e.code === 'auth/user-not-found' ? 'Utente non trovato' :
-                       e.code === 'auth/wrong-password' ? 'Password non corretta' :
-                       e.code === 'auth/invalid-email' ? 'Email non valida' :
-                       e.message;
-        $('err').textContent = 'Errore: ' + errMsg;
-        loginBtn.disabled = false;
-        loginBtn.textContent = 'Accedi';
-      }
-    });
-  }
-  
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => signOut(auth));
-  }
-});
-
-// AUTH STATE LISTENER
-onAuthStateChanged(auth, async u => {
-  user = u;
-  if (!u) {
-    $('login').classList.remove('hidden');
-    $('app').classList.add('hidden');
-    // Resetta il form
-    $('email').value = '';
-    $('password').value = '';
-    $('err').textContent = '';
-    const loginBtn = $('loginBtn');
-    if (loginBtn) {
-      loginBtn.disabled = false;
-      loginBtn.textContent = 'Accedi';
+// LOAD DATA FROM LOCALSTORAGE
+function load() {
+  const saved = localStorage.getItem('angies-manager-state');
+  if (saved) {
+    try {
+      state = JSON.parse(saved);
+    } catch(e) {
+      console.error('Errore caricamento dati:', e);
+      state = { employees: NAMES, kitchenPercent: 20, history: [], chat: [] };
     }
-    return;
   }
-  $('login').classList.add('hidden');
-  $('app').classList.remove('hidden');
-  $('who').textContent = 'Benvenuto, ' + u.email;
-  await load();
-  init();
-  chatListen();
-  render();
-});
+}
 
-// LOAD DATA FROM FIRESTORE
-async function load() {
-  try {
-    const s = await getDoc(doc(db, 'restaurants', 'angies', 'settings', 'main'));
-    if (s.exists()) {
-      let d = s.data();
-      state.employees = d.employees || NAMES;
-      state.kitchenPercent = d.kitchenPercent || 20;
-    }
-    const h = await getDocs(collection(db, 'restaurants', 'angies', 'days'));
-    state.history = [];
-    h.forEach(d => {
-      state.history.push({ date: d.id, ...d.data() });
-    });
-    state.history.sort((a, b) => b.date.localeCompare(a.date));
-  } catch(e) {
-    console.error('Errore caricamento:', e);
-  }
+// SAVE DATA TO LOCALSTORAGE
+function saveState() {
+  localStorage.setItem('angies-manager-state', JSON.stringify(state));
 }
 
 // INIT
@@ -113,21 +36,13 @@ function init() {
     b.onclick = () => tab(b.dataset.tab, b);
   });
   
-  const saveBtn = $('saveBtn');
-  const clearBtn = $('clearBtn');
-  const exportBtn = $('export');
-  const deleteAllBtn = $('deleteAll');
-  const sendBtn = $('send');
-  const setBtn = $('saveSet');
-  const msgInput = $('msg');
-  
-  if (saveBtn) saveBtn.onclick = saveDay;
-  if (clearBtn) clearBtn.onclick = () => clear();
-  if (exportBtn) exportBtn.onclick = exportCSV;
-  if (deleteAllBtn) deleteAllBtn.onclick = deleteAll;
-  if (sendBtn) sendBtn.onclick = sendMsg;
-  if (setBtn) setBtn.onclick = saveSettings;
-  if (msgInput) msgInput.onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
+  $('saveBtn').onclick = saveDay;
+  $('clearBtn').onclick = () => clear();
+  $('export').onclick = exportCSV;
+  $('deleteAll').onclick = deleteAll;
+  $('send').onclick = sendMsg;
+  $('saveSet').onclick = saveSettings;
+  $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
 }
 
 // TAB NAVIGATION
@@ -196,6 +111,7 @@ function render() {
   history();
   stats();
   settings();
+  chatRender();
 }
 
 // RENDER HOURS TABLE
@@ -230,7 +146,7 @@ function calc() {
 }
 
 // SAVE DAY
-async function saveDay() {
+function saveDay() {
   let d = data();
   if (!d.date) return alert('Inserisci la data.');
   if (d.total <= 0) return alert('Inserisci Cash o Carta.');
@@ -241,15 +157,11 @@ async function saveDay() {
     state.history.splice(state.history.indexOf(existing), 1);
   }
   state.history.unshift(d);
+  saveState();
   
-  try {
-    await setDoc(doc(db, 'restaurants', 'angies', 'days', d.date), d);
-    alert('Giornata salvata!');
-    clear();
-    render();
-  } catch(e) {
-    alert('Errore salvataggio: ' + e.message);
-  }
+  alert('Giornata salvata!');
+  clear();
+  render();
 }
 
 // CLEAR FORM
@@ -294,25 +206,18 @@ function history() {
 }
 
 // DELETE DAY
-window.delDay = async i => {
+window.delDay = i => {
   if (!confirm('Cancellare questa giornata?')) return;
-  let d = state.history[i].date;
   state.history.splice(i, 1);
-  try {
-    await deleteDoc(doc(db, 'restaurants', 'angies', 'days', d));
-    render();
-  } catch(e) {
-    alert('Errore cancellazione: ' + e.message);
-  }
+  saveState();
+  render();
 };
 
 // DELETE ALL
-async function deleteAll() {
+function deleteAll() {
   if (!confirm('Cancellare tutto lo storico?')) return;
-  for (let r of state.history) {
-    await deleteDoc(doc(db, 'restaurants', 'angies', 'days', r.date));
-  }
   state.history = [];
+  saveState();
   render();
 }
 
@@ -334,48 +239,38 @@ function settings() {
 }
 
 // SAVE SETTINGS
-async function saveSettings() {
+function saveSettings() {
   state.kitchenPercent = +$('kitchen').value || 20;
   state.employees = [...document.querySelectorAll('.emp')].map(x => x.value.trim()).filter(Boolean);
-  try {
-    await setDoc(doc(db, 'restaurants', 'angies', 'settings', 'main'), state);
-    alert('Impostazioni salvate!');
-    render();
-  } catch(e) {
-    alert('Errore: ' + e.message);
-  }
+  saveState();
+  alert('Impostazioni salvate!');
+  render();
 }
 
-// CHAT LISTEN
-function chatListen() {
-  if (unsub) unsub();
-  let q = query(collection(db, 'restaurants', 'angies', 'chat'), orderBy('createdAt', 'asc'));
-  unsub = onSnapshot(q, snap => {
-    let box = $('chatBox');
-    box.innerHTML = '';
-    snap.forEach(d => {
-      let msg = d.data();
-      box.innerHTML += `<div class="msg"><strong>${esc(msg.name)}</strong>: ${esc(msg.text)}</div>`;
-    });
-    box.scrollTop = box.scrollHeight;
+// CHAT RENDER
+function chatRender() {
+  let box = $('chatBox');
+  box.innerHTML = '';
+  state.chat.forEach(msg => {
+    box.innerHTML += `<div class="msg"><strong>${esc(msg.name)}</strong>: ${esc(msg.text)}</div>`;
   });
+  box.scrollTop = box.scrollHeight;
 }
 
 // SEND MESSAGE
-async function sendMsg() {
+function sendMsg() {
   let text = $('msg').value.trim();
   if (!text) return;
-  try {
-    await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
-      text: text,
-      email: user.email,
-      name: user.email.split('@')[0],
-      createdAt: serverTimestamp()
-    });
-    $('msg').value = '';
-  } catch(e) {
-    alert('Errore: ' + e.message);
-  }
+  
+  state.chat.push({
+    text: text,
+    name: 'User',
+    timestamp: new Date().toLocaleTimeString('it-IT')
+  });
+  
+  saveState();
+  $('msg').value = '';
+  chatRender();
 }
 
 // EXPORT CSV
@@ -418,3 +313,10 @@ function num(n) {
 function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
+
+// START APP
+window.addEventListener('load', () => {
+  load();
+  init();
+  render();
+});
