@@ -1,29 +1,105 @@
-// OFFLINE MODE - Usa localStorage invece di Firebase
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore";
+import { firebaseConfig } from "./firebase-config.js?v=11";
+
+const fbApp = initializeApp(firebaseConfig);
+const auth = getAuth(fbApp);
+const db = getFirestore(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
-let state = { employees: NAMES, kitchenPercent: 20, history: [], chat: [] };
+let state = { employees: NAMES, kitchenPercent: 20, history: [] };
+let user = null;
+let unsub = null;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 
-// LOAD DATA FROM LOCALSTORAGE
-function load() {
-  const saved = localStorage.getItem('angies-manager-state');
-  if (saved) {
-    try {
-      state = JSON.parse(saved);
-    } catch(e) {
-      console.error('Errore caricamento dati:', e);
-      state = { employees: NAMES, kitchenPercent: 20, history: [], chat: [] };
-    }
+// LOGIN HANDLER
+window.addEventListener('load', () => {
+  const loginBtn = $('loginBtn');
+  
+  if (loginBtn) {
+    loginBtn.addEventListener('click', async () => {
+      try {
+        const errElement = $('err');
+        errElement.textContent = '';
+        const email = $('email').value.trim();
+        const password = $('password').value;
+        
+        if (!email || !password) {
+          errElement.textContent = 'Inserisci email e password';
+          return;
+        }
+        
+        loginBtn.disabled = true;
+        loginBtn.textContent = 'Accesso in corso...';
+        
+        await signInWithEmailAndPassword(auth, email, password);
+      } catch(e) {
+        console.error('Errore login:', e.code, e.message);
+        const errMsg = e.code === 'auth/user-not-found' ? 'Utente non trovato' :
+                       e.code === 'auth/wrong-password' ? 'Password non corretta' :
+                       e.code === 'auth/invalid-email' ? 'Email non valida' :
+                       e.message;
+        $('err').textContent = 'Errore: ' + errMsg;
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Accedi';
+      }
+    });
   }
-}
+  
+  const logoutBtn = $('logoutBtn');
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => signOut(auth));
+  }
+});
 
-// SAVE DATA TO LOCALSTORAGE
-function saveState() {
-  localStorage.setItem('angies-manager-state', JSON.stringify(state));
+// AUTH STATE LISTENER
+onAuthStateChanged(auth, async u => {
+  user = u;
+  if (!u) {
+    $('login').classList.remove('hidden');
+    $('app').classList.add('hidden');
+    $('email').value = '';
+    $('password').value = '';
+    $('err').textContent = '';
+    const loginBtn = $('loginBtn');
+    if (loginBtn) {
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Accedi';
+    }
+    return;
+  }
+  $('login').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  $('who').textContent = 'Benvenuto, ' + u.email;
+  await load();
+  init();
+  chatListen();
+  render();
+});
+
+// LOAD DATA FROM FIRESTORE
+async function load() {
+  try {
+    const s = await getDoc(doc(db, 'restaurants', 'angies', 'settings', 'main'));
+    if (s.exists()) {
+      let d = s.data();
+      state.employees = d.employees || NAMES;
+      state.kitchenPercent = d.kitchenPercent || 20;
+    }
+    const h = await getDocs(collection(db, 'restaurants', 'angies', 'days'));
+    state.history = [];
+    h.forEach(d => {
+      state.history.push({ date: d.id, ...d.data() });
+    });
+    state.history.sort((a, b) => b.date.localeCompare(a.date));
+  } catch(e) {
+    console.error('Errore caricamento:', e);
+  }
 }
 
 // INIT
@@ -61,20 +137,29 @@ function tab(id, b) {
   render();
 }
 
-// SPLIT CALCULATION
+// SPLIT CALCULATION - CORRETTO
 function split(r) {
   let p = state.kitchenPercent / 100;
   let c = r.cash || 0;
   let ca = r.card || 0;
   let t = r.total ?? (c + ca);
+  
+  // Cucina prende la percentuale
+  let cucinaCash = c * p;
+  let cucinaCard = ca * p;
+  
+  // Sala prende il resto
+  let salaCash = c * (1 - p);
+  let salaCard = ca * (1 - p);
+  
   return {
     cash: c,
     card: ca,
     total: t,
-    salaCash: r.salaCash ?? c * (1 - p),
-    salaCard: r.salaCard ?? ca * (1 - p),
-    cucinaCash: r.cucinaCash ?? c * p,
-    cucinaCard: r.cucinaCard ?? ca * p
+    salaCash: salaCash,
+    salaCard: salaCard,
+    cucinaCash: cucinaCash,
+    cucinaCard: cucinaCard
   };
 }
 
@@ -111,29 +196,60 @@ function render() {
   history();
   stats();
   settings();
-  chatRender();
 }
 
-// RENDER HOURS TABLE
+// RENDER HOURS TABLE - CORRETTO
 function hours() {
-  let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash</th><th>Carta</th><th>Totale</th></tr>';
+  let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
+  
+  // Calcola totale ore sala
+  let totalHours = [...document.querySelectorAll('.hour')].reduce((sum, x) => sum + (+x.value || 0), 0);
+  
   state.employees.forEach((n, i) => {
-    html += `<tr><td>${esc(n)}</td><td><input class="hour" type="number" step="0.5" value="0"></td><td class="calc"></td><td class="calc"></td><td class="calc"></td></tr>`;
+    html += `<tr><td>${esc(n)}</td><td><input class="hour" type="number" step="0.5" value="0"></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
   $('hours').innerHTML = html;
   
+  // Aggiorna i calcoli quando cambiano le ore
   document.querySelectorAll('.hour').forEach((x, i) => {
-    x.oninput = () => {
-      let h = +x.value || 0;
-      let c = (+$('cash').value || 0) / state.employees.length * h;
-      let ca = (+$('card').value || 0) / state.employees.length * h;
-      let cells = x.parentElement.parentElement.querySelectorAll('.calc');
-      cells[0].textContent = euro(c);
-      cells[1].textContent = euro(ca);
-      cells[2].textContent = euro(c + ca);
-      calc();
-    };
+    x.oninput = () => updateHourCalculations();
   });
+  
+  // Aggiorna anche quando cambiano cash/card
+  $('cash').oninput = () => updateHourCalculations();
+  $('card').oninput = () => updateHourCalculations();
+}
+
+// UPDATE HOUR CALCULATIONS - CORRETTO
+function updateHourCalculations() {
+  let cash = +$('cash').value || 0;
+  let card = +$('card').value || 0;
+  let h = [...document.querySelectorAll('.hour')].map(x => +x.value || 0);
+  let totalHours = h.reduce((a, b) => a + b, 0);
+  
+  let p = state.kitchenPercent / 100;
+  let salaCash = cash * (1 - p);
+  let salaCard = card * (1 - p);
+  
+  // Prezzo per ora sala
+  let pricePerHourCash = totalHours > 0 ? salaCash / totalHours : 0;
+  let pricePerHourCard = totalHours > 0 ? salaCard / totalHours : 0;
+  
+  // Aggiorna ogni riga
+  document.querySelectorAll('.hour').forEach((x, i) => {
+    let hours = +x.value || 0;
+    let cells = x.parentElement.parentElement.querySelectorAll('[class^="calc-"]');
+    
+    let empCash = pricePerHourCash * hours;
+    let empCard = pricePerHourCard * hours;
+    let empTotal = empCash + empCard;
+    
+    cells[0].textContent = euro(empCash);
+    cells[1].textContent = euro(empCard);
+    cells[2].textContent = euro(empTotal);
+  });
+  
+  calc();
 }
 
 // CALCULATE AND DISPLAY
@@ -146,7 +262,7 @@ function calc() {
 }
 
 // SAVE DAY
-function saveDay() {
+async function saveDay() {
   let d = data();
   if (!d.date) return alert('Inserisci la data.');
   if (d.total <= 0) return alert('Inserisci Cash o Carta.');
@@ -157,11 +273,15 @@ function saveDay() {
     state.history.splice(state.history.indexOf(existing), 1);
   }
   state.history.unshift(d);
-  saveState();
   
-  alert('Giornata salvata!');
-  clear();
-  render();
+  try {
+    await setDoc(doc(db, 'restaurants', 'angies', 'days', d.date), d);
+    alert('Giornata salvata!');
+    clear();
+    render();
+  } catch(e) {
+    alert('Errore salvataggio: ' + e.message);
+  }
 }
 
 // CLEAR FORM
@@ -187,37 +307,52 @@ function dash() {
   $('dDays').textContent = r.length;
 }
 
-// HISTORY
+// HISTORY - CORRETTO
 function history() {
   let html = '<tr><th>Data</th>';
-  state.employees.forEach(n => html += `<th>${esc(n)} Cash</th><th>${esc(n)} Carta</th><th>${esc(n)} Totale</th>`);
-  html += '<th>Sala Cash</th><th>Sala Carta</th><th>Sala Tot.</th><th>Cucina Cash</th><th>Cucina Carta</th><th>Cucina Tot.</th><th>Azioni</th></tr>';
+  state.employees.forEach(n => html += `<th>${esc(n)} (€/ora)</th>`);
+  html += '<th>Sala Cash</th><th>Sala Carta</th><th>Sala Tot.</th><th>Cucina Cash</th><th>Cucina Carta</th><th>Cucina Tot.</th><th>Totale</th><th>Azioni</th></tr>';
   
   state.history.forEach((r, i) => {
     html += `<tr><td>${fmt(r.date)}</td>`;
-    state.employees.forEach((n, j) => {
-      let c = (split(r).salaCash / state.employees.length) || 0;
-      let ca = (split(r).salaCard / state.employees.length) || 0;
-      html += `<td>${euro(c)}</td><td>${euro(ca)}</td><td>${euro(c + ca)}</td>`;
+    
+    // Calcola prezzo per ora per ogni dipendente
+    let totalHours = r.hours ? r.hours.reduce((a, b) => a + b, 0) : 0;
+    let salaData = split(r);
+    let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
+    let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
+    
+    // Mostra per ogni dipendente
+    (r.hours || []).forEach((h, j) => {
+      let empTotal = (pricePerHourCash + pricePerHourCard) * h;
+      html += `<td>${euro(empTotal)}</td>`;
     });
-    html += `<td>${euro(split(r).salaCash)}</td><td>${euro(split(r).salaCard)}</td><td>${euro(split(r).salaCash + split(r).salaCard)}</td><td>${euro(split(r).cucinaCash)}</td><td>${euro(split(r).cucinaCard)}</td><td>${euro(split(r).cucinaCash + split(r).cucinaCard)}</td><td><button onclick="delDay(${i})">✕</button></td></tr>`;
+    
+    html += `<td>${euro(salaData.salaCash)}</td><td>${euro(salaData.salaCard)}</td><td>${euro(salaData.salaCash + salaData.salaCard)}</td><td>${euro(salaData.cucinaCash)}</td><td>${euro(salaData.cucinaCard)}</td><td>${euro(salaData.cucinaCash + salaData.cucinaCard)}</td><td><strong>${euro(r.total)}</strong></td><td><button onclick="delDay(${i})">✕</button></td></tr>`;
   });
   $('hist').innerHTML = html;
 }
 
 // DELETE DAY
-window.delDay = i => {
+window.delDay = async i => {
   if (!confirm('Cancellare questa giornata?')) return;
+  let d = state.history[i].date;
   state.history.splice(i, 1);
-  saveState();
-  render();
+  try {
+    await deleteDoc(doc(db, 'restaurants', 'angies', 'days', d));
+    render();
+  } catch(e) {
+    alert('Errore cancellazione: ' + e.message);
+  }
 };
 
 // DELETE ALL
-function deleteAll() {
+async function deleteAll() {
   if (!confirm('Cancellare tutto lo storico?')) return;
+  for (let r of state.history) {
+    await deleteDoc(doc(db, 'restaurants', 'angies', 'days', r.date));
+  }
   state.history = [];
-  saveState();
   render();
 }
 
@@ -239,59 +374,77 @@ function settings() {
 }
 
 // SAVE SETTINGS
-function saveSettings() {
+async function saveSettings() {
   state.kitchenPercent = +$('kitchen').value || 20;
   state.employees = [...document.querySelectorAll('.emp')].map(x => x.value.trim()).filter(Boolean);
-  saveState();
-  alert('Impostazioni salvate!');
-  render();
+  try {
+    await setDoc(doc(db, 'restaurants', 'angies', 'settings', 'main'), state);
+    alert('Impostazioni salvate!');
+    render();
+  } catch(e) {
+    alert('Errore: ' + e.message);
+  }
 }
 
-// CHAT RENDER
-function chatRender() {
-  let box = $('chatBox');
-  box.innerHTML = '';
-  state.chat.forEach(msg => {
-    box.innerHTML += `<div class="msg"><strong>${esc(msg.name)}</strong>: ${esc(msg.text)}</div>`;
+// CHAT LISTEN
+function chatListen() {
+  if (unsub) unsub();
+  let q = query(collection(db, 'restaurants', 'angies', 'chat'), orderBy('createdAt', 'asc'));
+  unsub = onSnapshot(q, snap => {
+    let box = $('chatBox');
+    box.innerHTML = '';
+    snap.forEach(d => {
+      let msg = d.data();
+      box.innerHTML += `<div class="msg"><strong>${esc(msg.name)}</strong>: ${esc(msg.text)}</div>`;
+    });
+    box.scrollTop = box.scrollHeight;
   });
-  box.scrollTop = box.scrollHeight;
 }
 
 // SEND MESSAGE
-function sendMsg() {
+async function sendMsg() {
   let text = $('msg').value.trim();
   if (!text) return;
-  
-  state.chat.push({
-    text: text,
-    name: 'User',
-    timestamp: new Date().toLocaleTimeString('it-IT')
-  });
-  
-  saveState();
-  $('msg').value = '';
-  chatRender();
+  try {
+    await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
+      text: text,
+      email: user.email,
+      name: user.email.split('@')[0],
+      createdAt: serverTimestamp()
+    });
+    $('msg').value = '';
+  } catch(e) {
+    alert('Errore: ' + e.message);
+  }
 }
 
 // EXPORT CSV
 function exportCSV() {
   let h = ['Data'];
-  state.employees.forEach(n => h.push(`${n} Cash`, `${n} Carta`, `${n} Totale`));
+  state.employees.forEach(n => h.push(`${n} (€/ora)`));
   h.push('Sala Cash', 'Sala Carta', 'Sala Totale', 'Cucina Cash', 'Cucina Carta', 'Cucina Totale', 'Totale');
   
   let rows = [h];
   state.history.forEach(r => {
+    let salaData = split(r);
     let row = [fmt(r.date)];
-    state.employees.forEach(() => {
-      row.push(num(0), num(0), num(0));
+    
+    // Calcola per ogni dipendente
+    let totalHours = r.hours ? r.hours.reduce((a, b) => a + b, 0) : 0;
+    let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
+    let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
+    
+    (r.hours || []).forEach(h => {
+      row.push(num((pricePerHourCash + pricePerHourCard) * h));
     });
+    
     row.push(
-      num(split(r).salaCash),
-      num(split(r).salaCard),
-      num(split(r).salaCash + split(r).salaCard),
-      num(split(r).cucinaCash),
-      num(split(r).cucinaCard),
-      num(split(r).cucinaCash + split(r).cucinaCard),
+      num(salaData.salaCash),
+      num(salaData.salaCard),
+      num(salaData.salaCash + salaData.salaCard),
+      num(salaData.cucinaCash),
+      num(salaData.cucinaCard),
+      num(salaData.cucinaCash + salaData.cucinaCard),
       num(r.total)
     );
     rows.push(row);
@@ -313,10 +466,3 @@ function num(n) {
 function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
-
-// START APP
-window.addEventListener('load', () => {
-  load();
-  init();
-  render();
-});
