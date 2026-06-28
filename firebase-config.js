@@ -1,11 +1,9 @@
-// Inserisci qui i dati del tuo progetto Firebase.
-// Firebase Console → Project settings → General → Your apps → Web app
-
 export const firebaseConfig = {
-  apiKey: "INCOLLA_QUI",
-  authDomain: "INCOLLA_QUI",
-  projectId: "INCOLLA_QUI",
-  storageBucket: "INCOLLA_QUI",
-  messagingSenderId: "INCOLLA_QUI",
-  appId: "INCOLLA_QUI"
+  apiKey: "AIzaSyA-3t0GGijEie7kZy3fdSOdmYJTGa6TNvU",
+  authDomain: "angies-manager.firebaseapp.com",
+  projectId: "angies-manager",
+  storageBucket: "angies-manager.firebasestorage.app",
+  messagingSenderId: "943573030062",
+  appId: "1:943573030062:web:7bbac79e5c4f7cbbf6493f",
+  measurementId: "G-LLJPZMSHQ8"
 };
