@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Angie's Tips Manager</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Angie's Tips Manager</h1>
+      <p>Gestionale mance</p>
+    </div>
+  </header>
+
+  <nav class="tabs">
+    <button class="active" data-tab="dashboard">Dashboard</button>
+    <button data-tab="newday">Nuova</button>
+    <button data-tab="history">Storico</button>
+    <button data-tab="stats">Statistiche</button>
+    <button data-tab="settings">Impostazioni</button>
+  </nav>
+
+  <main>
+    <section id="dashboard" class="page active">
+      <h2>Dashboard</h2>
+      <div class="cards">
+        <div class="card"><span>Totale mance</span><strong id="dashTotal">€0,00</strong></div>
+        <div class="card"><span>Sala</span><strong id="dashSala">€0,00</strong></div>
+        <div class="card"><span>Cucina</span><strong id="dashCucina">€0,00</strong></div>
+        <div class="card"><span>Giornate</span><strong id="dashDays">0</strong></div>
+      </div>
+      <div class="panel">
+        <h3>Ultime giornate</h3>
+        <div class="table-wrap"><table id="recentTable"></table></div>
+      </div>
+    </section>
+
+    <section id="newday" class="page">
+      <h2>Nuova giornata</h2>
+      <div class="panel">
+        <div class="form-grid">
+          <label>Data <input id="date" type="date" /></label>
+          <label>Mance cash <input id="cash" type="number" min="0" step="0.01" /></label>
+          <label>Mance carta <input id="card" type="number" min="0" step="0.01" /></label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>Ore dipendenti</h3>
+        <div class="table-wrap"><table id="hoursTable"></table></div>
+      </div>
+
+      <div class="cards">
+        <div class="card"><span>20% cucina</span><strong id="kKitchen">€0,00</strong></div>
+        <div class="card"><span>80% sala</span><strong id="kSala">€0,00</strong></div>
+        <div class="card"><span>Ore totali</span><strong id="kHours">0</strong></div>
+        <div class="card"><span>€/ora</span><strong id="kPerHour">€0,00</strong></div>
+      </div>
+
+      <div class="actions">
+        <button class="primary" id="saveBtn">💾 Salva giornata</button>
+        <button class="secondary" id="clearBtn">Pulisci</button>
+      </div>
+    </section>
+
+    <section id="history" class="page">
+      <h2>Storico</h2>
+      <div class="actions">
+        <button class="secondary" id="exportBtn">Esporta CSV</button>
+        <button class="danger" id="deleteAllBtn">Cancella tutto</button>
+      </div>
+      <div class="panel table-wrap"><table id="historyTable"></table></div>
+    </section>
+
+    <section id="stats" class="page">
+      <h2>Statistiche periodo</h2>
+      <div class="panel">
+        <div class="form-grid">
+          <label>Dal <input id="fromDate" type="date" /></label>
+          <label>Al <input id="toDate" type="date" /></label>
+        </div>
+      </div>
+      <div class="cards">
+        <div class="card"><span>Cash</span><strong id="sCash">€0,00</strong></div>
+        <div class="card"><span>Carta</span><strong id="sCard">€0,00</strong></div>
+        <div class="card"><span>Sala</span><strong id="sSala">€0,00</strong></div>
+        <div class="card"><span>Cucina</span><strong id="sCucina">€0,00</strong></div>
+      </div>
+      <div class="panel table-wrap"><table id="statsTable"></table></div>
+    </section>
+
+    <section id="settings" class="page">
+      <h2>Impostazioni</h2>
+      <div class="panel">
+        <label>Percentuale cucina
+          <input id="kitchenPercent" type="number" min="0" max="100" step="1" />
+        </label>
+      </div>
+      <div class="panel">
+        <h3>Dipendenti</h3>
+        <div class="table-wrap"><table id="employeesTable"></table></div>
+        <button class="primary" id="saveSettingsBtn">Salva impostazioni</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
