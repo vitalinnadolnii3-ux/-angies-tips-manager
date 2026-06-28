@@ -226,7 +226,7 @@ function validateEmployeePayload({ name, email, role, password, requirePassword 
   const normalizedPassword = String(password || '');
   if (requirePassword && normalizedPassword.length < 8) throw new Error('Password minima di 8 caratteri.');
   if (!requirePassword && normalizedPassword && normalizedPassword.length < 8) throw new Error('Nuova password minima di 8 caratteri.');
-  return { normalizedName, normalizedEmail, normalizedRole, normalizedPassword: String(password || '') };
+  return { normalizedName, normalizedEmail, normalizedRole, normalizedPassword };
 }
 
 async function checkEmailUniqueness(email, ignoreId = '') {
@@ -445,7 +445,7 @@ async function loadCurrentUserProfile(user) {
     } else {
       currentUserRole = 'Waiter';
       await upsertEmployeeProfile(user.uid, {
-        name: normalizeName((user.email || '').split('@')[0]) || currentUser,
+        name: normalizeName((user.email || '').split('@')[0]) || user.email || 'Unknown',
         email: currentUser,
         role: currentUserRole,
         enabled: true
