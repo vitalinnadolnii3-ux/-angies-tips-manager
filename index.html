@@ -3,17 +3,28 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Angie's Manager v10</title>
-  <link rel="stylesheet" href="style.css?v=10">
+  <title>Angie's Manager v11</title>
+  <link rel="stylesheet" href="style.css?v=11">
 </head>
 <body>
-  <div id="app">
+  <div id="login" class="login">
+    <div class="login-card">
+      <h1>Angie's Manager</h1>
+      <p>Accesso riservato</p>
+      <input id="email" type="email" placeholder="Email">
+      <input id="password" type="password" placeholder="Password">
+      <button id="loginBtn">Accedi</button>
+      <p id="err" style="color:red;font-weight:bold;min-height:20px;"></p>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
     <header>
       <div>
         <h1>Angie's Manager</h1>
-        <p id="who">Offline Mode</p>
+        <p id="who">Online</p>
       </div>
-      <button id="logoutBtn" style="display:none;">Logout</button>
+      <button id="logoutBtn">Logout</button>
     </header>
 
     <nav>
@@ -105,6 +116,6 @@
     </main>
   </div>
 
-  <script type="module" src="app.js?v=10"></script>
+  <script type="module" src="app.js?v=11"></script>
 </body>
 </html>
