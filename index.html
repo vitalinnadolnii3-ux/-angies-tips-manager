@@ -33,6 +33,8 @@
       <button data-tab="newday">Nuova giornata</button>
       <button data-tab="history">Storico</button>
       <button data-tab="stats">Statistiche</button>
+      <button id="turniTabBtn" class="hidden" data-tab="turni">Turni</button>
+      <button id="myShiftsTabBtn" data-tab="myShifts">I miei turni</button>
       <button data-tab="chat">Chat</button>
       <button data-tab="settings">Impostazioni</button>
       <button id="employeeTabBtn" class="hidden" data-tab="employeeManagement">Employee Management</button>
@@ -145,9 +147,62 @@
           <table id="employeeList"></table>
         </div>
       </section>
+
+      <section id="turni" class="page">
+        <h2>Turni</h2>
+        <div class="actions shift-week-nav">
+          <button id="shiftPrevWeekBtn" class="clear">Settimana precedente</button>
+          <button id="shiftCurrentWeekBtn">Settimana corrente</button>
+          <button id="shiftNextWeekBtn" class="clear">Settimana successiva</button>
+          <button id="newShiftBtn">Nuovo turno</button>
+        </div>
+        <div class="panel">
+          <table id="shiftsTable" class="shift-table"></table>
+        </div>
+        <div id="shiftEditor" class="panel hidden">
+          <h3>Modifica turno</h3>
+          <div class="panel grid">
+            <label>Dipendente
+              <select id="shiftEmployee"></select>
+            </label>
+            <label>Data<input id="shiftDate" type="date"></label>
+            <label id="shiftStartWrap">Inizio<input id="shiftStartTime" type="time"></label>
+            <label id="shiftEndWrap">Fine<input id="shiftEndTime" type="text" placeholder="HH:MM o Ch"></label>
+            <label>Turno<input id="shiftText" type="text" placeholder="09:30-17:00"></label>
+            <label>Ruolo
+              <select id="shiftRole">
+                <option value="">Seleziona ruolo</option>
+                <option value="Waiter">Waiter</option>
+                <option value="Kitchen">Kitchen</option>
+                <option value="Manager">Manager</option>
+                <option value="Admin">Admin</option>
+              </select>
+            </label>
+            <label>Note<textarea id="shiftNotes" rows="2" placeholder="Note turno"></textarea></label>
+            <label class="shift-rest-label"><input id="shiftRestDay" type="checkbox"> Giorno di riposo</label>
+          </div>
+          <div class="actions">
+            <button id="shiftSaveBtn">Salva turno</button>
+            <button id="shiftDeleteBtn" class="danger hidden">Elimina turno</button>
+            <button id="shiftCancelBtn" class="clear">Annulla</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="myShifts" class="page">
+        <h2>I miei turni</h2>
+        <div class="actions shift-week-nav">
+          <button id="myShiftPrevWeekBtn" class="clear">Settimana precedente</button>
+          <button id="myShiftCurrentWeekBtn">Settimana corrente</button>
+          <button id="myShiftNextWeekBtn" class="clear">Settimana successiva</button>
+        </div>
+        <div class="panel">
+          <table id="myShiftsTable" class="shift-table"></table>
+        </div>
+      </section>
     </main>
   </div>
 
-  <script type="module" src="app.js?v=15"></script>
+  <script type="module" src="app.js?v=16"></script>
 </body>
 </html>

@@ -6,20 +6,60 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isAdmin() {
+    function employeeProfile() {
+      return get(/databases/$(database)/documents/restaurants/angies/employees/$(request.auth.uid));
+    }
+
+    function employeeExists() {
       return signedIn() &&
-        exists(/databases/$(database)/documents/restaurants/angies/employees/$(request.auth.uid)) &&
-        get(/databases/$(database)/documents/restaurants/angies/employees/$(request.auth.uid)).data.role == "Admin" &&
-        get(/databases/$(database)/documents/restaurants/angies/employees/$(request.auth.uid)).data.enabled == true;
+        exists(/databases/$(database)/documents/restaurants/angies/employees/$(request.auth.uid));
+    }
+
+    function employeeRole() {
+      return employeeExists() ? employeeProfile().data.role : '';
+    }
+
+    function employeeEnabled() {
+      return employeeExists() && employeeProfile().data.enabled == true;
+    }
+
+    function isAdmin() {
+      return signedIn() && employeeEnabled() && employeeRole() == "Admin";
+    }
+
+    function isManagerOrAdmin() {
+      return signedIn() && employeeEnabled() && (employeeRole() == "Admin" || employeeRole() == "Manager");
     }
 
     match /restaurants/angies/employees/{employeeId} {
-      allow read: if signedIn() && (isAdmin() || request.auth.uid == employeeId);
+      allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || request.auth.uid == employeeId);
       allow create, update, delete: if isAdmin();
     }
 
-    match /restaurants/angies/{document=**} {
-      allow read, write: if signedIn();
+    match /restaurants/angies/shifts/{shiftId} {
+      // Employee reads must query with uid == request.auth.uid; otherwise the query is denied.
+      allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || resource.data.uid == request.auth.uid);
+      allow create: if isManagerOrAdmin() &&
+        request.resource.data.uid is string &&
+        request.resource.data.date is string;
+      allow update, delete: if isManagerOrAdmin();
+    }
+
+    match /restaurants/angies/days/{dayId} {
+      allow read, write: if signedIn() && employeeEnabled();
+    }
+
+    match /restaurants/angies/settings/{settingId} {
+      allow read, write: if signedIn() && employeeEnabled();
+    }
+
+    match /restaurants/angies/chat/{chatId} {
+      allow read, write: if signedIn() && employeeEnabled();
+    }
+
+    match /restaurants/angies/logs/{logId} {
+      allow read: if isManagerOrAdmin();
+      allow create: if signedIn() && employeeEnabled();
     }
   }
 }
