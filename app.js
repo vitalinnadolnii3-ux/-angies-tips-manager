@@ -386,7 +386,7 @@ async function deleteAll() {
   render();
 }
 
-// STATS - IMPROVED
+// STATS - IMPROVED CON LISTA COMPLETA DIPENDENTI
 function stats() {
   let f = $('from').value || '0000-01-01';
   let t = $('to').value || '9999-12-31';
@@ -397,7 +397,7 @@ function stats() {
   $('sCash').textContent = euro(sum(rows, 'cash'));
   $('sCard').textContent = euro(sum(rows, 'card'));
   
-  // Calcola per dipendente
+  // Calcola per dipendente - INIZIALIZZA TUTTI I DIPENDENTI
   let empStats = {};
   state.employees.forEach(name => {
     empStats[name] = { cash: 0, card: 0 };
@@ -420,12 +420,12 @@ function stats() {
     });
   });
   
-  // Render tabella dipendenti
+  // Render tabella dipendenti - MOSTRA TUTTI ANCHE SE ZERO
   let empHtml = '<tr><th>Dipendente</th><th>💵 Cash</th><th>💳 Carta</th><th>📊 Totale</th></tr>';
   state.employees.forEach(name => {
-    let stats = empStats[name];
+    let stats = empStats[name] || { cash: 0, card: 0 };
     let total = stats.cash + stats.card;
-    empHtml += `<tr><td class="emp-name">${esc(name)}</td><td>${euro(stats.cash)}</td><td>${euro(stats.card)}</td><td class="emp-total">${euro(total)}</td></tr>`;
+    empHtml += `<tr><td class="emp-name">${esc(name)}</td><td class="emp-cash">${euro(stats.cash)}</td><td class="emp-card">${euro(stats.card)}</td><td class="emp-total">${euro(total)}</td></tr>`;
   });
   $('empStats').innerHTML = empHtml;
 }
