@@ -294,6 +294,7 @@ function shareWhatsApp() {
   let d = data();
   if (!d.date) return alert('Seleziona una data.');
   if (d.total <= 0) return alert('Nessun dato da condividere.');
+  if (d.totalHours <= 0) return alert('Inserisci almeno un\'ora.');
   
   let message = `📊 *Riepilogo Giornata: ${fmt(d.date)}*\n\n`;
   message += `💰 *Totale Mance:* ${euro(d.total)}\n`;
@@ -309,7 +310,23 @@ function shareWhatsApp() {
   message += `*Cucina:*\n`;
   message += `  💵 Cash: ${euro(d.cucinaCash)}\n`;
   message += `  💳 Carta: ${euro(d.cucinaCard)}\n`;
-  message += `  📈 Totale: ${euro(d.cucinaCash + d.cucinaCard)}\n`;
+  message += `  📈 Totale: ${euro(d.cucinaCash + d.cucinaCard)}\n\n`;
+  
+  let pricePerHourCash = d.totalHours > 0 ? d.salaCash / d.totalHours : 0;
+  let pricePerHourCard = d.totalHours > 0 ? d.salaCard / d.totalHours : 0;
+  let employeesWorked = state.employees
+    .map((name, i) => ({ name, hours: d.hours[i] || 0 }))
+    .filter(e => e.hours > 0);
+  
+  if (employeesWorked.length) {
+    message += `👥 *Dettaglio per Dipendente:*\n`;
+    employeesWorked.forEach(e => {
+      let empCash = pricePerHourCash * e.hours;
+      let empCard = pricePerHourCard * e.hours;
+      let empTotal = empCash + empCard;
+      message += `  ${e.name}: 💵 ${euro(empCash)} | 💳 ${euro(empCard)} | 📊 ${euro(empTotal)}\n`;
+    });
+  }
   
   let whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
   window.open(whatsappUrl, '_blank');
