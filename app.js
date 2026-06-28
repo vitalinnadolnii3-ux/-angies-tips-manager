@@ -828,9 +828,10 @@ function renderMyShiftCards() {
 
 function syncShiftEditorRestState() {
   const shiftType = normalizeShiftType($('shiftType').value);
-  const isRest = $('shiftRestDay').checked || shiftType === 'rest';
-  if (isRest && shiftType !== 'rest') $('shiftType').value = 'rest';
-  if (!isRest && shiftType === 'rest') $('shiftType').value = 'morning';
+  const restChecked = $('shiftRestDay').checked;
+  if (restChecked && shiftType !== 'rest') $('shiftType').value = 'rest';
+  if (!restChecked && shiftType === 'rest') $('shiftType').value = 'morning';
+  const isRest = restChecked || normalizeShiftType($('shiftType').value) === 'rest';
   $('shiftRestDay').checked = isRest;
   $('shiftStartWrap').classList.toggle('hidden', isRest);
   $('shiftEndWrap').classList.toggle('hidden', isRest);
