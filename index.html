@@ -134,6 +134,7 @@
               <option value="">Seleziona ruolo</option>
               <option value="Admin">Admin</option>
               <option value="Manager">Manager</option>
+              <option value="Responsible">Responsible</option>
               <option value="Waiter">Waiter</option>
               <option value="Kitchen">Kitchen</option>
             </select>
@@ -167,15 +168,25 @@
               <select id="shiftEmployee"></select>
             </label>
             <label>Data<input id="shiftDate" type="date"></label>
+            <label>Tipo turno
+              <select id="shiftType">
+                <option value="morning">Morning</option>
+                <option value="evening">Evening</option>
+                <option value="long">Long</option>
+                <option value="split">Split</option>
+                <option value="rest">Rest</option>
+              </select>
+            </label>
             <label id="shiftStartWrap">Inizio<input id="shiftStartTime" type="time"></label>
             <label id="shiftEndWrap">Fine<input id="shiftEndTime" type="text" placeholder="HH:MM o Ch"></label>
-            <label>Turno<input id="shiftText" type="text" placeholder="09:30-17:00"></label>
+            <label>Turno<input id="shiftText" type="text" placeholder="09:30-17:00 o 11-15/19-23"></label>
             <label>Ruolo
               <select id="shiftRole">
                 <option value="">Seleziona ruolo</option>
                 <option value="Waiter">Waiter</option>
                 <option value="Kitchen">Kitchen</option>
                 <option value="Manager">Manager</option>
+                <option value="Responsible">Responsible</option>
                 <option value="Admin">Admin</option>
               </select>
             </label>

@@ -25,8 +25,9 @@ let weekOffset = 0;
 let editingShiftId = '';
 let todayShiftPopupShown = false;
 const SESSION_KEY = 'angiesManagerUser';
-const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Waiter', 'Kitchen'];
+const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
+const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -36,8 +37,9 @@ const normalizeEmail = s => String(s || '').trim().toLowerCase();
 function getCurrentUserRole() { return currentUserRole; }
 const isAdmin = () => currentUserRole.toLowerCase() === 'admin';
 const isManager = () => currentUserRole.toLowerCase() === 'manager';
+const isResponsible = () => currentUserRole.toLowerCase() === 'responsible';
 const isWaiter = () => currentUserRole.toLowerCase() === 'waiter';
-const canManageShifts = () => isAdmin() || isManager();
+const canManageShifts = () => isAdmin() || isManager() || isResponsible();
 const canManageUsers = () => isAdmin();
 const canViewAllData = () => isAdmin() || isManager();
 const canViewUserData = (targetUid) => isAdmin() || isManager() || targetUid === currentUserUid;
@@ -87,6 +89,11 @@ function resolveUsername(name) {
 function normalizeRole(role) {
   const cleaned = String(role || '').trim();
   return EMPLOYEE_ROLES.includes(cleaned) ? cleaned : '';
+}
+
+function normalizeShiftType(shiftType) {
+  const cleaned = String(shiftType || '').trim().toLowerCase();
+  return SHIFT_TYPES.includes(cleaned) ? cleaned : '';
 }
 
 function deriveNameFromEmail(email) {
@@ -149,6 +156,19 @@ function getCurrentWeekDates() {
   });
 }
 
+function getWeekStartDate(dateStr) {
+  const date = parseISODate(dateStr);
+  const day = date.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const monday = new Date(date);
+  monday.setDate(date.getDate() + diff);
+  return monday;
+}
+
+function getWeekStartISO(dateStr) {
+  return toISODate(getWeekStartDate(dateStr));
+}
+
 function getShiftDisplayText(shift) {
   if (!shift) return '';
   if (shift.isRestDay) return 'R';
@@ -171,19 +191,47 @@ function parseHour(value) {
   return hour + (minute / 60);
 }
 
+function extractStartEndFromText(text) {
+  const value = String(text || '').trim();
+  if (!value) return { startToken: '', endToken: '' };
+  const slots = value.split('/');
+  const firstSlot = String(slots[0] || '');
+  const lastSlot = String(slots[slots.length - 1] || '');
+  const startToken = firstSlot.split('-')[0] || '';
+  const endSlotParts = lastSlot.split('-');
+  const endToken = endSlotParts[endSlotParts.length - 1] || '';
+  return { startToken: startToken.trim(), endToken: endToken.trim() };
+}
+
+function calculateShiftDuration(startHour, endHour) {
+  if (startHour === null || endHour === null) return null;
+  let duration = endHour - startHour;
+  if (duration < 0) duration += 24;
+  return duration;
+}
+
 function classifyShift(shift) {
-  if (!shift) return { type: '', total: '' };
-  if (shift.isRestDay) return { type: 'shift-rest', total: '' };
+  if (!shift) return { type: 'shift-empty', total: '', shiftType: '' };
+  const declaredType = normalizeShiftType(shift.shiftType);
+  if (shift.isRestDay || declaredType === 'rest') return { type: 'shift-rest', total: '', shiftType: 'rest' };
+  if (declaredType === 'split') return { type: 'shift-long', total: 'P', shiftType: 'split' };
+  if (declaredType === 'long') return { type: 'shift-long', total: 'P', shiftType: 'long' };
+  if (declaredType === 'evening') return { type: 'shift-evening', total: 'S', shiftType: 'evening' };
+  if (declaredType === 'morning') return { type: 'shift-morning', total: 'M', shiftType: 'morning' };
   const text = getShiftDisplayText(shift);
+  if (!text || text.trim().toUpperCase() === 'R') return { type: 'shift-rest', total: '', shiftType: 'rest' };
   const lower = text.toLowerCase();
-  if (lower.includes('ch')) return { type: 'shift-evening', total: 'S' };
-  if (text.includes('/')) return { type: 'shift-full', total: 'P' };
-  const startHour = parseHour(shift.startTime || text.split('-')[0]);
-  const endHour = parseHour(shift.endTime || text.split('-')[1]);
-  if (startHour !== null && endHour !== null && (endHour - startHour >= 7.5)) return { type: 'shift-full', total: 'P' };
-  if (startHour !== null && startHour >= 16) return { type: 'shift-evening', total: 'S' };
-  if (startHour !== null && startHour < 12) return { type: 'shift-morning', total: 'M' };
-  return { type: 'shift-full', total: 'P' };
+  const hasSplit = text.includes('/');
+  if (hasSplit) return { type: 'shift-long', total: 'P', shiftType: 'split' };
+  const { startToken, endToken } = extractStartEndFromText(text);
+  const startHour = parseHour(shift.startTime || startToken);
+  const endHour = parseHour(shift.endTime || endToken);
+  const duration = calculateShiftDuration(startHour, endHour);
+  const hasClosing = /(?:-|\/)\s*ch\s*$/i.test(text) || /ch/i.test(String(shift.endTime || '')) || lower.endsWith('ch');
+  if (hasClosing || (startHour !== null && startHour >= 16)) return { type: 'shift-evening', total: 'S', shiftType: 'evening' };
+  if (duration !== null && duration >= 7.5) return { type: 'shift-long', total: 'P', shiftType: 'long' };
+  if (startHour !== null && startHour < 12) return { type: 'shift-morning', total: 'M', shiftType: 'morning' };
+  return { type: 'shift-long', total: 'P', shiftType: 'long' };
 }
 
 function getShiftEmployees() {
@@ -193,6 +241,14 @@ function getShiftEmployees() {
       .map(emp => ({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id }))
       .sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
   }
+  const map = new Map();
+  shiftsData.forEach(shift => {
+    if (!shift?.uid) return;
+    const label = normalizeName(shift.employeeName) || normalizeName(shift.uid);
+    map.set(shift.uid, { id: shift.uid, name: label || shift.uid });
+  });
+  const employees = [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
+  if (employees.length) return employees;
   return currentUserUid ? [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUser }] : [];
 }
 
@@ -238,13 +294,14 @@ function syncShiftTabVisibility() {
   const turniTabBtn = $('turniTabBtn');
   const myShiftsTabBtn = $('myShiftsTabBtn');
   if (turniTabBtn) {
-    turniTabBtn.classList.toggle('hidden', !canManageShifts());
+    turniTabBtn.classList.remove('hidden');
   }
   if (myShiftsTabBtn) {
     myShiftsTabBtn.classList.toggle('hidden', canManageShifts());
   }
-  if (!canManageShifts() && $('turni').classList.contains('active')) {
-    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+  const newShiftBtn = $('newShiftBtn');
+  if (newShiftBtn) {
+    newShiftBtn.classList.toggle('hidden', !canManageShifts());
   }
   if (canManageShifts() && $('myShifts').classList.contains('active')) {
     tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
@@ -422,7 +479,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
   await setDoc(employeeDoc(uid), payload, { merge: !isCreate });
 
   // Sync role to /users/ collection for RBAC
-  // /users/ uses lowercase roles ('admin','manager','waiter') per the data model spec
+  // /users/ uses lowercase roles ('admin','manager','responsible','waiter','kitchen') per the data model spec
   const userPayload = {
     email: data.email,
     name: data.name,
@@ -643,7 +700,7 @@ async function loadCurrentUserProfile(user) {
         return false;
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
-      // /users/ collection stores roles as lowercase ('admin','manager','waiter')
+      // /users/ collection stores roles as lowercase ('admin','manager','responsible','waiter','kitchen')
       currentUserRole = profile.role || 'waiter';
     } else {
       // Fallback to /employees/ collection for backwards compatibility
@@ -702,7 +759,7 @@ function renderShiftTable(tableId, allowEdit) {
   const weekDates = getCurrentWeekDates();
   const employees = getShiftEmployees();
   const shiftByKey = shiftMapByKey();
-  let html = '<tr><th>Dipendente</th>';
+  let html = '<tr><th class="shift-employee-header">Dipendente</th>';
   weekDates.forEach(day => {
     html += `<th>${day.dayName}<span class="shift-date">${day.shortDate}</span></th>`;
   });
@@ -714,7 +771,7 @@ function renderShiftTable(tableId, allowEdit) {
   }
   const totals = weekDates.map(() => ({ M: 0, P: 0, S: 0 }));
   employees.forEach(employee => {
-    html += `<tr><td>${esc(employee.name)}</td>`;
+    html += `<tr><td class="shift-employee-cell">${esc(employee.name)}</td>`;
     weekDates.forEach((day, index) => {
       const shift = shiftByKey.get(`${employee.id}__${day.date}`);
       const shiftText = getShiftDisplayText(shift);
@@ -724,7 +781,7 @@ function renderShiftTable(tableId, allowEdit) {
     });
     html += '</tr>';
   });
-  html += '<tr class="shift-total-row"><td>Totali</td>';
+  html += '<tr class="shift-total-row"><td class="shift-employee-cell">Totali</td>';
   totals.forEach(dayTotal => {
     html += `<td>M: ${dayTotal.M} | P: ${dayTotal.P} | S: ${dayTotal.S}</td>`;
   });
@@ -769,9 +826,14 @@ function renderMyShiftCards() {
 }
 
 function syncShiftEditorRestState() {
-  const isRest = $('shiftRestDay').checked;
+  const shiftType = normalizeShiftType($('shiftType').value);
+  const isRest = $('shiftRestDay').checked || shiftType === 'rest';
+  if (isRest && shiftType !== 'rest') $('shiftType').value = 'rest';
+  if (!isRest && shiftType === 'rest') $('shiftType').value = 'morning';
+  $('shiftRestDay').checked = isRest;
   $('shiftStartWrap').classList.toggle('hidden', isRest);
   $('shiftEndWrap').classList.toggle('hidden', isRest);
+  if (isRest) $('shiftText').value = 'R';
 }
 
 function clearShiftEditor() {
@@ -780,6 +842,7 @@ function clearShiftEditor() {
   $('shiftDate').value = '';
   $('shiftStartTime').value = '';
   $('shiftEndTime').value = '';
+  $('shiftType').value = 'morning';
   $('shiftText').value = '';
   $('shiftRole').value = '';
   $('shiftNotes').value = '';
@@ -807,10 +870,12 @@ function openShiftEditor(uid = '', date = '') {
   $('shiftDate').value = targetDate;
   $('shiftStartTime').value = existing?.startTime || '';
   $('shiftEndTime').value = existing?.endTime || '';
+  const existingClass = existing ? classifyShift(existing) : null;
+  $('shiftType').value = normalizeShiftType(existing?.shiftType) || existingClass?.shiftType || 'morning';
   $('shiftText').value = existing?.shiftText || '';
   $('shiftRole').value = normalizeRole(existing?.role);
   $('shiftNotes').value = existing?.notes || '';
-  $('shiftRestDay').checked = Boolean(existing?.isRestDay);
+  $('shiftRestDay').checked = Boolean(existing?.isRestDay) || $('shiftType').value === 'rest';
   syncShiftEditorRestState();
   // Delete button: only visible to admin (not manager)
   $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId || !isAdmin());
@@ -818,23 +883,34 @@ function openShiftEditor(uid = '', date = '') {
 }
 
 async function saveShift() {
-  if (!canManageShifts()) return alert('Accesso consentito solo ad Admin/Manager.');
+  if (!canManageShifts()) return alert('Accesso consentito solo ad Admin/Manager/Responsible.');
   const uid = $('shiftEmployee').value;
   const date = $('shiftDate').value;
-  const isRestDay = $('shiftRestDay').checked;
+  const selectedEmployee = getShiftEmployees().find(emp => emp.id === uid);
+  let shiftType = normalizeShiftType($('shiftType').value) || 'morning';
+  const isRestDay = $('shiftRestDay').checked || shiftType === 'rest';
   if (!uid) return alert('Seleziona un dipendente.');
   if (!date) return alert('Seleziona una data.');
   const startTime = isRestDay ? null : String($('shiftStartTime').value || '').trim();
   const endTime = isRestDay ? null : String($('shiftEndTime').value || '').trim();
   let shiftText = String($('shiftText').value || '').trim();
-  if (isRestDay) shiftText = shiftText || 'R';
+  if (isRestDay) {
+    shiftType = 'rest';
+    shiftText = 'R';
+  }
   if (!isRestDay && !shiftText && startTime && endTime) shiftText = `${startTime}-${endTime}`;
+  if (!isRestDay && !normalizeShiftType(shiftType)) {
+    shiftType = classifyShift({ shiftText, startTime, endTime, isRestDay: false }).shiftType || 'morning';
+  }
   const payload = {
     uid,
+    employeeName: selectedEmployee?.name || '',
     date,
+    weekStart: getWeekStartISO(date),
     shiftText,
     startTime,
     endTime,
+    shiftType,
     role: normalizeRole($('shiftRole').value) || 'Waiter',
     notes: String($('shiftNotes').value || '').trim(),
     isRestDay,
@@ -845,7 +921,11 @@ async function saveShift() {
       await setDoc(shiftDoc(editingShiftId), payload, { merge: true });
       await writeLog(`shift_update:${editingShiftId}`);
     } else {
-      await addDoc(shiftCollection(), { ...payload, createdAt: serverTimestamp() });
+      await addDoc(shiftCollection(), {
+        ...payload,
+        createdBy: currentUserUid || '',
+        createdAt: serverTimestamp()
+      });
       await writeLog(`shift_create:${uid}:${date}`);
     }
     clearShiftEditor();
@@ -893,15 +973,6 @@ function attachShiftListeners() {
     where('date', '<=', weekDates[6].date),
     orderBy('date', 'asc')
   );
-  if (!canManageShifts()) {
-    q = query(
-      shiftCollection(),
-      where('uid', '==', currentUserUid),
-      where('date', '>=', weekDates[0].date),
-      where('date', '<=', weekDates[6].date),
-      orderBy('date', 'asc')
-    );
-  }
   shiftsUnsub = onSnapshot(q, snap => {
     setShiftStatus('');
     shiftsData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
@@ -945,6 +1016,7 @@ function init() {
     openShiftEditor(employees[0]?.id || '', getCurrentWeekDates()[0].date);
   };
   $('shiftRestDay').onchange = syncShiftEditorRestState;
+  $('shiftType').onchange = syncShiftEditorRestState;
   $('shiftSaveBtn').onclick = saveShift;
   $('shiftDeleteBtn').onclick = deleteShift;
   $('shiftCancelBtn').onclick = clearShiftEditor;
@@ -986,9 +1058,7 @@ function tab(id, b) {
     return;
   }
   if (id === 'turni' && !canManageShifts()) {
-    console.warn('Solo admin/manager possono gestire i turni.');
-    alert('Solo admin/manager possono gestire i turni.');
-    return;
+    clearShiftEditor();
   }
   if (id === 'myShifts' && canManageShifts()) {
     alert('Questa vista è disponibile per i dipendenti.');

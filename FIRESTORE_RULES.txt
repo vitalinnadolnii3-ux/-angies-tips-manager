@@ -31,6 +31,14 @@ service cloud.firestore {
       return signedIn() && employeeEnabled() && (employeeRole() == "Admin" || employeeRole() == "Manager");
     }
 
+    function isResponsible() {
+      return signedIn() && employeeEnabled() && employeeRole() == "Responsible";
+    }
+
+    function canManageShifts() {
+      return isAdmin() || isManagerOrAdmin() || isResponsible();
+    }
+
     // New helper functions reading from /users/ collection
     function userProfileExists() {
       return signedIn() &&
@@ -53,8 +61,14 @@ service cloud.firestore {
         userProfile().data.active != false;
     }
 
+    function isUserResponsible() {
+      return userProfileExists() &&
+        userProfile().data.role == 'responsible' &&
+        userProfile().data.active != false;
+    }
+
     function isUserManagerOrAdmin() {
-      return isUserAdmin() || isUserManager();
+      return isUserAdmin() || isUserManager() || isUserResponsible();
     }
 
     function isShiftOwner() {
@@ -69,23 +83,30 @@ service cloud.firestore {
       // User can read their own document; admin (via employees) can read all
       allow read: if signedIn() && (request.auth.uid == uid || isAdmin());
       // Only admin can create/update user documents
-      allow write: if isAdmin();
+      allow create, update: if isAdmin() &&
+        request.resource.data.role is string &&
+        request.resource.data.role in ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
       // Only admin can delete user documents
       allow delete: if isAdmin();
     }
 
     match /restaurants/angies/employees/{employeeId} {
-      allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || request.auth.uid == employeeId);
-      allow create, update, delete: if isAdmin();
+      allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || isResponsible() || request.auth.uid == employeeId);
+      allow create, update: if isAdmin() &&
+        request.resource.data.role is string &&
+        request.resource.data.role in ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
+      allow delete: if isAdmin();
     }
 
     match /restaurants/angies/shifts/{shiftId} {
-      // Waiters can read only their own shifts; managers and admins can read all shifts.
-      allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || resource.data.uid == request.auth.uid);
-      allow create: if isManagerOrAdmin() &&
+      // All authenticated active users can view shifts.
+      allow read: if signedIn() && employeeEnabled();
+      allow create: if canManageShifts() &&
         request.resource.data.uid is string &&
-        request.resource.data.date is string;
-      allow update: if isManagerOrAdmin();
+        request.resource.data.date is string &&
+        request.resource.data.weekStart is string &&
+        request.resource.data.shiftType is string;
+      allow update: if canManageShifts();
       // Only admin can delete shifts
       allow delete: if isAdmin();
     }
