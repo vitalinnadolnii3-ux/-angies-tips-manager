@@ -48,6 +48,11 @@ function normalizeRole(role) {
   return EMPLOYEE_ROLES.includes(cleaned) ? cleaned : '';
 }
 
+function deriveNameFromEmail(email) {
+  const localPart = normalizeName(String(email || '').split('@')[0]);
+  return localPart || String(email || '').trim() || 'Unknown';
+}
+
 function employeeCollection() {
   return collection(db, 'restaurants', 'angies', 'employees');
 }
@@ -71,11 +76,6 @@ async function createAuthUserWithSecondarySession(email, password) {
     return cred.user.uid;
   } finally {
     await deleteApp(secondaryApp);
-  }
-
-  function deriveNameFromEmail(email) {
-    const localPart = normalizeName(String(email || '').split('@')[0]);
-    return localPart || String(email || '').trim() || 'Unknown';
   }
 }
 
