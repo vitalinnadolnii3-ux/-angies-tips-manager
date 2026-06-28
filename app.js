@@ -21,7 +21,7 @@ const LOGIN_EMAIL_DOMAIN = 'angies.local';
 const DEFAULT_LOGIN_LOCAL_PART = 'user';
 
 function isValidEmail(email) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  return /^[^\s@]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(email) && !email.includes('..');
 }
 
 function sanitizeLoginName(name) {
@@ -40,6 +40,7 @@ function loginEmail(name) {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '.')
+    .replace(/\.+/g, '.')
     .replace(/^\.+|\.+$/g, '');
   return `${normalized || DEFAULT_LOGIN_LOCAL_PART}@${LOGIN_EMAIL_DOMAIN}`;
 }
@@ -81,11 +82,7 @@ async function login() {
     localStorage.setItem(LOGIN_NAME_KEY, name);
   } catch(e) {
     console.error('Errore login:', e);
-    if (e.code && e.code.startsWith('auth/') && e.code !== 'auth/network-request-failed') {
-      setLoginError('Credenziali non valide.');
-    } else {
-      setLoginError('Errore di connessione. Riprova.');
-    }
+    setLoginError('Accesso non riuscito. Riprova.');
   }
 }
 
