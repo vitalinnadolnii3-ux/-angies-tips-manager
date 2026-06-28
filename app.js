@@ -67,8 +67,8 @@ async function doLogin() {
   try {
     cred = await signInWithEmailAndPassword(auth, email, pwd);
   } catch (e) {
-    if (e?.code === 'auth/user-not-found' || e?.code === 'auth/invalid-credential') {
-      const shouldCreate = confirm('Credenziali non trovate. Vuoi creare un nuovo account con questa email?');
+    if (e?.code === 'auth/user-not-found') {
+      const shouldCreate = confirm('Account non trovato. Vuoi creare un nuovo account con questa email?');
       if (!shouldCreate) return;
       try {
         cred = await createUserWithEmailAndPassword(auth, email, pwd);
@@ -76,6 +76,8 @@ async function doLogin() {
         console.error('Errore creazione account:', createErr);
         return alert('Errore login: ' + createErr.message);
       }
+    } else if (e?.code === 'auth/invalid-credential') {
+      return alert('Credenziali non valide.');
     } else {
       console.error('Errore login:', e);
       return alert('Errore login: ' + e.message);
@@ -92,13 +94,20 @@ async function doLogin() {
 
 async function logout() {
   const userToLog = currentUser;
-  await writeLog('logout', userToLog);
+  let signedOut = false;
+  let logoutError = null;
   try {
     await signOut(auth);
+    signedOut = true;
   } catch (e) {
+    logoutError = e;
     console.error('Errore logout:', e);
-    return alert('Errore logout: ' + e.message);
   }
+  if (!signedOut) {
+    await writeLog('logout_failed', userToLog);
+    return alert('Errore logout: ' + (logoutError?.message || 'Logout non riuscito'));
+  }
+  writeLog('logout', userToLog);
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
   $('who').textContent = 'Online';
