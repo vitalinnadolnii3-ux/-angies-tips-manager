@@ -8,11 +8,85 @@ const db = getFirestore(fbApp);
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
+let currentUser = '';
+const LOGIN_PASSWORD = 'angiesroma';
+const SESSION_KEY = 'angiesManagerUser';
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+
+function normalizeName(s) {
+  return String(s || '').trim().replace(/\s+/g, ' ');
+}
+
+function resolveUsername(name) {
+  const cleaned = normalizeName(name);
+  if (!cleaned) return '';
+  const employeeMatch = state.employees.find(n => n.toLowerCase() === cleaned.toLowerCase());
+  if (employeeMatch) return employeeMatch;
+  if (/^\d+$/.test(cleaned)) return '';
+  if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(cleaned)) return '';
+  if (!/^[A-Za-zÀ-ÖØ-öø-ÿ0-9 '.-]{2,40}$/.test(cleaned)) return '';
+  return cleaned;
+}
+
+function showLogin() {
+  $('app').classList.add('hidden');
+  $('loginScreen').classList.remove('hidden');
+  $('loginName').focus();
+}
+
+function showApp() {
+  $('loginScreen').classList.add('hidden');
+  $('app').classList.remove('hidden');
+}
+
+async function writeLog(action, username = currentUser) {
+  if (!username) return;
+  try {
+    await addDoc(collection(db, 'restaurants', 'angies', 'logs'), {
+      timestamp: serverTimestamp(),
+      username,
+      action
+    });
+  } catch (e) {
+    console.error('Errore log:', e);
+  }
+}
+
+async function doLogin() {
+  const rawName = $('loginName').value;
+  const pwd = $('loginPass').value;
+  const normalizedName = normalizeName(rawName);
+  if (!normalizedName) return alert('Inserisci il nome');
+  if (!pwd) return alert('Inserisci la password');
+  if (pwd !== LOGIN_PASSWORD) return alert('Password errata');
+  const username = resolveUsername(normalizedName);
+  if (!username) return alert('Nome non valido');
+
+  currentUser = username;
+  localStorage.setItem(SESSION_KEY, currentUser);
+  $('who').textContent = currentUser;
+  $('loginPass').value = '';
+  showApp();
+  chatListen();
+  writeLog('login');
+}
+
+async function logout() {
+  const userToLog = currentUser;
+  localStorage.removeItem(SESSION_KEY);
+  currentUser = '';
+  $('who').textContent = 'Online';
+  if (unsub) {
+    unsub();
+    unsub = null;
+  }
+  showLogin();
+  writeLog('logout', userToLog);
+}
 
 // LOAD DATA FROM FIRESTORE
 async function load() {
@@ -50,7 +124,11 @@ function init() {
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
   $('saveSet').onclick = saveSettings;
+  $('loginBtn').onclick = doLogin;
+  $('logoutBtn').onclick = logout;
   $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
+  $('loginPass').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
+  $('loginName').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
 }
 
 // TAB NAVIGATION
@@ -261,7 +339,7 @@ function history() {
       html += `<td>${euro(empTotal)}</td>`;
     });
     
-    html += `<td>${euro(salaData.salaCash)}</td><td>${euro(salaData.salaCard)}</td><td>${euro(salaData.salaCash + salaData.salaCard)}</td><td>${euro(salaData.cucinaCash)}</td><td>${euro(salaData.cucinaCard)}</td><td>${euro(salaData.cucinaCash + salaData.cucinaCard)}</td><td><b>${euro(r.total)}</b></td><td><button onclick="delDay(${i})">❌</button></td></tr>`;
+    html += `<td>${euro(salaData.salaCash)}</td><td>${euro(salaData.salaCard)}</td><td>${euro(salaData.salaCash + salaData.salaCard)}</td><td>${euro(salaData.cucinaCash)}</td><td>${euro(salaData.cucinaCard)}</td><td>${euro(salaData.cucinaCash + salaData.cucinaCard)}</td><td>${euro(r.total)}</td><td><button onclick="delDay(${i})">Cancella</button></td></tr>`;
   });
   $('hist').innerHTML = html;
 }
@@ -342,10 +420,11 @@ function chatListen() {
 async function sendMsg() {
   let text = $('msg').value.trim();
   if (!text) return;
+  if (!currentUser) return alert('Effettua il login');
   try {
     await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
       text: text,
-      name: 'User-' + Math.random().toString(36).substr(2, 9),
+      name: currentUser,
       createdAt: serverTimestamp()
     });
     $('msg').value = '';
@@ -404,10 +483,19 @@ function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
 
-// START APP - ACCESSO IMMEDIATO
+// START APP
 window.addEventListener('load', async () => {
   await load();
   init();
   render();
-  chatListen();
+  const saved = resolveUsername(localStorage.getItem(SESSION_KEY));
+  if (saved) {
+    currentUser = saved;
+    $('who').textContent = currentUser;
+    showApp();
+    chatListen();
+  } else {
+    localStorage.removeItem(SESSION_KEY);
+    showLogin();
+  }
 });
