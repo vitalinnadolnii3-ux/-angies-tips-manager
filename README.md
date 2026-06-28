@@ -25,3 +25,4 @@ Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
 
 Nota: dopo ogni aggiornamento delle regole, pubblica `FIRESTORE_RULES.txt` su Firestore prima di usare la gestione turni.
+Per i turni con query `uid + date` può servire un indice composito Firestore (uid ASC, date ASC) se richiesto dalla console Firebase.
