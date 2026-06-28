@@ -1,5 +1,5 @@
 import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 import { firebaseConfig, getAuth } from "./firebase-config.js?v=12";
@@ -14,12 +14,19 @@ let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
 let currentUser = '';
 let currentUserUid = '';
+let currentUserName = '';
 let currentUserRole = '';
 let hasLoadedSessionData = false;
 let employeesData = [];
 let editingEmployeeId = '';
+let shiftsData = [];
+let shiftsUnsub = null;
+let weekOffset = 0;
+let editingShiftId = '';
+let todayShiftPopupShown = false;
 const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Waiter', 'Kitchen'];
+const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -27,6 +34,7 @@ const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 const normalizeEmail = s => String(s || '').trim().toLowerCase();
 const isAdmin = () => currentUserRole === 'Admin';
+const canManageShifts = () => currentUserRole === 'Admin' || currentUserRole === 'Manager';
 
 function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
@@ -59,6 +67,92 @@ function employeeCollection() {
 
 function employeeDoc(uid) {
   return doc(db, 'restaurants', 'angies', 'employees', uid);
+}
+
+function shiftCollection() {
+  return collection(db, 'restaurants', 'angies', 'shifts');
+}
+
+function shiftDoc(id) {
+  return doc(db, 'restaurants', 'angies', 'shifts', id);
+}
+
+function parseISODate(dateStr) {
+  if (!dateStr) return new Date();
+  const [y, m, d] = String(dateStr).split('-').map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+function toISODate(dateObj) {
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function getCurrentWeekDates() {
+  const base = parseISODate(today());
+  base.setDate(base.getDate() + weekOffset * 7);
+  const day = base.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  const monday = new Date(base);
+  monday.setDate(base.getDate() + diff);
+  return WEEK_DAYS_IT.map((name, index) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + index);
+    return {
+      dayName: name,
+      date: toISODate(d),
+      shortDate: `${String(d.getDate()).padStart(2, '0')}.${String(d.getMonth() + 1).padStart(2, '0')}`
+    };
+  });
+}
+
+function getShiftDisplayText(shift) {
+  if (!shift) return '';
+  if (shift.isRestDay) return 'R';
+  const text = String(shift.shiftText || '').trim();
+  if (text) return text;
+  const start = String(shift.startTime || '').trim();
+  const end = String(shift.endTime || '').trim();
+  if (start && end) return `${start}-${end}`;
+  return '';
+}
+
+function parseHour(value) {
+  const v = String(value || '').trim();
+  if (!v || /ch/i.test(v)) return null;
+  const parts = v.split(':');
+  if (parts.length < 1) return null;
+  const hour = Number(parts[0]);
+  const minute = Number(parts[1] || 0);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  return hour + (minute / 60);
+}
+
+function classifyShift(shift) {
+  if (!shift) return { type: '', total: '' };
+  if (shift.isRestDay) return { type: 'shift-rest', total: '' };
+  const text = getShiftDisplayText(shift);
+  const lower = text.toLowerCase();
+  if (lower.includes('ch')) return { type: 'shift-evening', total: 'S' };
+  if (text.includes('/')) return { type: 'shift-full', total: 'P' };
+  const startHour = parseHour(shift.startTime || text.split('-')[0]);
+  const endHour = parseHour(shift.endTime || text.split('-')[1]);
+  if (startHour !== null && endHour !== null && (endHour - startHour >= 7.5)) return { type: 'shift-full', total: 'P' };
+  if (startHour !== null && startHour >= 16) return { type: 'shift-evening', total: 'S' };
+  if (startHour !== null && startHour < 12) return { type: 'shift-morning', total: 'M' };
+  return { type: 'shift-full', total: 'P' };
+}
+
+function getShiftEmployees() {
+  if (canManageShifts()) {
+    return employeesData
+      .filter(emp => emp.enabled !== false)
+      .map(emp => ({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id }))
+      .sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
+  }
+  return currentUserUid ? [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUser }] : [];
 }
 
 async function callEmployeeAdminFunction(name, payload) {
@@ -99,6 +193,23 @@ function syncEmployeeTabVisibility() {
   }
 }
 
+function syncShiftTabVisibility() {
+  const turniTabBtn = $('turniTabBtn');
+  const myShiftsTabBtn = $('myShiftsTabBtn');
+  if (turniTabBtn) {
+    turniTabBtn.classList.toggle('hidden', !canManageShifts());
+  }
+  if (myShiftsTabBtn) {
+    myShiftsTabBtn.classList.toggle('hidden', canManageShifts());
+  }
+  if (!canManageShifts() && $('turni').classList.contains('active')) {
+    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+  }
+  if (canManageShifts() && $('myShifts').classList.contains('active')) {
+    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+  }
+}
+
 async function writeLog(action, username = currentUser) {
   if (!username) return;
   try {
@@ -134,10 +245,20 @@ async function logout() {
   }
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
+  currentUserName = '';
+  currentUserUid = '';
+  currentUserRole = '';
+  todayShiftPopupShown = false;
+  weekOffset = 0;
+  shiftsData = [];
   $('who').textContent = 'Online';
   if (unsub) {
     unsub();
     unsub = null;
+  }
+  if (shiftsUnsub) {
+    shiftsUnsub();
+    shiftsUnsub = null;
   }
   showLogin();
 }
@@ -163,7 +284,7 @@ async function load() {
 }
 
 async function loadEmployees() {
-  if (!isAdmin()) {
+  if (!canManageShifts()) {
     employeesData = [];
     renderEmployeesTable();
     return;
@@ -434,6 +555,7 @@ async function removeEmployee(id) {
 async function loadCurrentUserProfile(user) {
   currentUser = user.email || '';
   currentUserUid = user.uid || '';
+  currentUserName = deriveNameFromEmail(user.email);
   currentUserRole = '';
 
   try {
@@ -446,6 +568,7 @@ async function loadCurrentUserProfile(user) {
         await signOut(auth);
         return false;
       }
+      currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = normalizeRole(profile.role) || 'Waiter';
     } else {
       currentUserRole = 'Waiter';
@@ -464,6 +587,201 @@ async function loadCurrentUserProfile(user) {
     return false;
   }
   return true;
+}
+
+function shiftMapByKey() {
+  const map = new Map();
+  shiftsData.forEach(shift => {
+    const key = `${shift.uid}__${shift.date}`;
+    map.set(key, shift);
+  });
+  return map;
+}
+
+function maybeShowTodayShiftPopup() {
+  if (todayShiftPopupShown || canManageShifts() || !currentUserUid) return;
+  const shift = shiftsData.find(s => s.uid === currentUserUid && s.date === today());
+  if (!shift) return;
+  todayShiftPopupShown = true;
+  const text = getShiftDisplayText(shift);
+  alert(`Il tuo turno di oggi: ${text || 'Nessun turno assegnato'}`);
+}
+
+function renderShiftTable(tableId, allowEdit) {
+  const table = $(tableId);
+  if (!table) return;
+  const weekDates = getCurrentWeekDates();
+  const employees = getShiftEmployees();
+  const shiftByKey = shiftMapByKey();
+  let html = '<tr><th>Dipendente</th>';
+  weekDates.forEach(day => {
+    html += `<th>${day.dayName}<span class="shift-date">${day.shortDate}</span></th>`;
+  });
+  html += '</tr>';
+  if (!employees.length) {
+    html += `<tr><td colspan="${weekDates.length + 1}">Nessun dipendente disponibile.</td></tr>`;
+    table.innerHTML = html;
+    return;
+  }
+  const totals = weekDates.map(() => ({ M: 0, P: 0, S: 0 }));
+  employees.forEach(employee => {
+    html += `<tr><td>${esc(employee.name)}</td>`;
+    weekDates.forEach((day, index) => {
+      const shift = shiftByKey.get(`${employee.id}__${day.date}`);
+      const shiftText = getShiftDisplayText(shift);
+      const cls = shift ? classifyShift(shift) : { type: 'shift-empty', total: '' };
+      if (cls.total) totals[index][cls.total] += 1;
+      html += `<td class="shift-cell ${cls.type || 'shift-empty'}" data-shift-uid="${esc(employee.id)}" data-shift-date="${day.date}" ${allowEdit ? '' : 'data-readonly="true"'}>${esc(shiftText)}</td>`;
+    });
+    html += '</tr>';
+  });
+  html += '<tr class="shift-total-row"><td>Totali</td>';
+  totals.forEach(dayTotal => {
+    html += `<td>M: ${dayTotal.M} | P: ${dayTotal.P} | S: ${dayTotal.S}</td>`;
+  });
+  html += '</tr>';
+  table.innerHTML = html;
+}
+
+function renderShifts() {
+  renderShiftTable('shiftsTable', canManageShifts());
+  renderShiftTable('myShiftsTable', false);
+  maybeShowTodayShiftPopup();
+}
+
+function syncShiftEditorRestState() {
+  const isRest = $('shiftRestDay').checked;
+  $('shiftStartWrap').classList.toggle('hidden', isRest);
+  $('shiftEndWrap').classList.toggle('hidden', isRest);
+}
+
+function clearShiftEditor() {
+  editingShiftId = '';
+  $('shiftEmployee').value = '';
+  $('shiftDate').value = '';
+  $('shiftStartTime').value = '';
+  $('shiftEndTime').value = '';
+  $('shiftText').value = '';
+  $('shiftRole').value = '';
+  $('shiftNotes').value = '';
+  $('shiftRestDay').checked = false;
+  syncShiftEditorRestState();
+  $('shiftDeleteBtn').classList.add('hidden');
+  $('shiftEditor').classList.add('hidden');
+}
+
+function populateShiftEmployeeOptions(selectedUid = '') {
+  const select = $('shiftEmployee');
+  if (!select) return;
+  const employees = getShiftEmployees();
+  select.innerHTML = '<option value="">Seleziona dipendente</option>' + employees.map(emp => `<option value="${esc(emp.id)}">${esc(emp.name)}</option>`).join('');
+  if (selectedUid) select.value = selectedUid;
+}
+
+function openShiftEditor(uid = '', date = '') {
+  if (!canManageShifts()) return;
+  populateShiftEmployeeOptions(uid);
+  const targetDate = date || getCurrentWeekDates()[0].date;
+  const existing = shiftsData.find(s => s.uid === uid && s.date === targetDate);
+  editingShiftId = existing?.id || '';
+  $('shiftEmployee').value = uid || existing?.uid || '';
+  $('shiftDate').value = targetDate;
+  $('shiftStartTime').value = existing?.startTime || '';
+  $('shiftEndTime').value = existing?.endTime || '';
+  $('shiftText').value = existing?.shiftText || '';
+  $('shiftRole').value = normalizeRole(existing?.role);
+  $('shiftNotes').value = existing?.notes || '';
+  $('shiftRestDay').checked = Boolean(existing?.isRestDay);
+  syncShiftEditorRestState();
+  $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId);
+  $('shiftEditor').classList.remove('hidden');
+}
+
+async function saveShift() {
+  if (!canManageShifts()) return alert('Accesso consentito solo ad admin/manager.');
+  const uid = $('shiftEmployee').value;
+  const date = $('shiftDate').value;
+  const isRestDay = $('shiftRestDay').checked;
+  if (!uid) return alert('Seleziona un dipendente.');
+  if (!date) return alert('Seleziona una data.');
+  const startTime = isRestDay ? null : String($('shiftStartTime').value || '').trim();
+  const endTime = isRestDay ? null : String($('shiftEndTime').value || '').trim();
+  let shiftText = String($('shiftText').value || '').trim();
+  if (isRestDay) shiftText = shiftText || 'R';
+  if (!isRestDay && !shiftText && startTime && endTime) shiftText = `${startTime}-${endTime}`;
+  const payload = {
+    uid,
+    date,
+    shiftText,
+    startTime,
+    endTime,
+    role: normalizeRole($('shiftRole').value) || 'Waiter',
+    notes: String($('shiftNotes').value || '').trim(),
+    isRestDay,
+    updatedAt: serverTimestamp()
+  };
+  try {
+    if (editingShiftId) {
+      await setDoc(shiftDoc(editingShiftId), payload, { merge: true });
+      await writeLog(`shift_update:${editingShiftId}`);
+    } else {
+      await addDoc(shiftCollection(), { ...payload, createdAt: serverTimestamp() });
+      await writeLog(`shift_create:${uid}:${date}`);
+    }
+    clearShiftEditor();
+  } catch (e) {
+    console.error('Errore salvataggio turno:', e);
+    alert('Errore salvataggio turno: ' + e.message);
+  }
+}
+
+async function deleteShift() {
+  if (!canManageShifts()) return alert('Accesso consentito solo ad admin/manager.');
+  if (!editingShiftId) return;
+  if (!confirm('Eliminare questo turno?')) return;
+  try {
+    await deleteDoc(shiftDoc(editingShiftId));
+    await writeLog(`shift_delete:${editingShiftId}`);
+    clearShiftEditor();
+  } catch (e) {
+    console.error('Errore eliminazione turno:', e);
+    alert('Errore eliminazione turno: ' + e.message);
+  }
+}
+
+function attachShiftListeners() {
+  if (shiftsUnsub) {
+    shiftsUnsub();
+    shiftsUnsub = null;
+  }
+  if (!currentUserUid) {
+    shiftsData = [];
+    renderShifts();
+    return;
+  }
+  const weekDates = getCurrentWeekDates();
+  let q = query(
+    shiftCollection(),
+    where('date', '>=', weekDates[0].date),
+    where('date', '<=', weekDates[6].date),
+    orderBy('date', 'asc')
+  );
+  if (!canManageShifts()) {
+    q = query(
+      shiftCollection(),
+      where('uid', '==', currentUserUid),
+      where('date', '>=', weekDates[0].date),
+      where('date', '<=', weekDates[6].date),
+      orderBy('date', 'asc')
+    );
+  }
+  shiftsUnsub = onSnapshot(q, snap => {
+    shiftsData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    renderShifts();
+  }, err => {
+    console.error('Errore caricamento turni:', err);
+    alert('Errore caricamento turni: ' + err.message);
+  });
 }
 
 // INIT
@@ -485,6 +803,26 @@ function init() {
   $('saveSet').onclick = saveSettings;
   $('employeeSaveBtn').onclick = () => editingEmployeeId ? updateEmployee() : createEmployee();
   $('employeeCancelBtn').onclick = clearEmployeeForm;
+  $('shiftPrevWeekBtn').onclick = () => { weekOffset -= 1; clearShiftEditor(); attachShiftListeners(); };
+  $('shiftCurrentWeekBtn').onclick = () => { weekOffset = 0; clearShiftEditor(); attachShiftListeners(); };
+  $('shiftNextWeekBtn').onclick = () => { weekOffset += 1; clearShiftEditor(); attachShiftListeners(); };
+  $('myShiftPrevWeekBtn').onclick = () => { weekOffset -= 1; attachShiftListeners(); };
+  $('myShiftCurrentWeekBtn').onclick = () => { weekOffset = 0; attachShiftListeners(); };
+  $('myShiftNextWeekBtn').onclick = () => { weekOffset += 1; attachShiftListeners(); };
+  $('newShiftBtn').onclick = () => {
+    const employees = getShiftEmployees();
+    openShiftEditor(employees[0]?.id || '', getCurrentWeekDates()[0].date);
+  };
+  $('shiftRestDay').onchange = syncShiftEditorRestState;
+  $('shiftSaveBtn').onclick = saveShift;
+  $('shiftDeleteBtn').onclick = deleteShift;
+  $('shiftCancelBtn').onclick = clearShiftEditor;
+  $('shiftsTable').onclick = e => {
+    if (!canManageShifts()) return;
+    const cell = e.target.closest('.shift-cell');
+    if (!cell) return;
+    openShiftEditor(cell.getAttribute('data-shift-uid') || '', cell.getAttribute('data-shift-date') || '');
+  };
   $('employeeList').onclick = e => {
     const btn = e.target.closest('button[data-employee-action]');
     if (!btn) return;
@@ -508,6 +846,14 @@ function init() {
 function tab(id, b) {
   if (id === 'employeeManagement' && !isAdmin()) {
     alert('Accesso consentito solo agli admin.');
+    return;
+  }
+  if (id === 'turni' && !canManageShifts()) {
+    alert('Accesso consentito solo ad admin/manager.');
+    return;
+  }
+  if (id === 'myShifts' && canManageShifts()) {
+    alert('Questa vista è disponibile per i dipendenti.');
     return;
   }
   document.querySelectorAll('.page').forEach(p => {
@@ -582,6 +928,7 @@ function render() {
   stats();
   settings();
   renderEmployeesTable();
+  renderShifts();
 }
 
 // RENDER HOURS TABLE
@@ -941,24 +1288,37 @@ window.addEventListener('load', async () => {
         hasLoadedSessionData = false;
         localStorage.removeItem(SESSION_KEY);
         currentUser = '';
+        currentUserName = '';
         currentUserUid = '';
         currentUserRole = '';
         employeesData = [];
+        shiftsData = [];
+        if (shiftsUnsub) {
+          shiftsUnsub();
+          shiftsUnsub = null;
+        }
         $('who').textContent = 'Online';
         clearEmployeeForm();
+        clearShiftEditor();
         syncEmployeeTabVisibility();
+        syncShiftTabVisibility();
+        renderShifts();
         showLogin();
         return;
       }
       localStorage.setItem(SESSION_KEY, currentUser);
       $('who').textContent = `${currentUser} (${currentUserRole})`;
       $('loginPass').value = '';
+      todayShiftPopupShown = false;
       if (!hasLoadedSessionData) {
         await load();
         hasLoadedSessionData = true;
       }
       await loadEmployees();
       syncEmployeeTabVisibility();
+      syncShiftTabVisibility();
+      populateShiftEmployeeOptions();
+      attachShiftListeners();
       render();
       showApp();
       chatListen();
@@ -967,16 +1327,27 @@ window.addEventListener('load', async () => {
       hasLoadedSessionData = false;
       localStorage.removeItem(SESSION_KEY);
       currentUser = '';
+      currentUserName = '';
       currentUserUid = '';
       currentUserRole = '';
+      todayShiftPopupShown = false;
+      weekOffset = 0;
       employeesData = [];
+      shiftsData = [];
       $('who').textContent = 'Online';
       if (unsub) {
         unsub();
         unsub = null;
       }
+      if (shiftsUnsub) {
+        shiftsUnsub();
+        shiftsUnsub = null;
+      }
       clearEmployeeForm();
+      clearShiftEditor();
       syncEmployeeTabVisibility();
+      syncShiftTabVisibility();
+      renderShifts();
       showLogin();
     }
   });

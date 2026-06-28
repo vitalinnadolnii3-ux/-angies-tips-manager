@@ -14,6 +14,7 @@ Poi crea un utente in Firebase > Authentication > Users > Add user.
 
 Per la gestione dipendenti admin dall'app:
 - collezione Firestore: `restaurants/angies/employees/{uid}` con campi `email`, `name`, `role`, `enabled`, `createdAt`, `updatedAt`
+- turni settimanali: `restaurants/angies/shifts/{shiftId}` con campi `uid`, `date`, `shiftText`, `startTime`, `endTime`, `role`, `notes`, `isRestDay`, `createdAt`, `updatedAt`
 - opzionale (consigliato) Callable Functions:
   - `createEmployeeAuthUser`
   - `updateEmployeeAuthUser`
@@ -22,3 +23,5 @@ Se `createEmployeeAuthUser` non è disponibile, la creazione usa fallback client
 
 Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
+
+Nota: dopo ogni aggiornamento delle regole, pubblica `FIRESTORE_RULES.txt` su Firestore prima di usare la gestione turni.
