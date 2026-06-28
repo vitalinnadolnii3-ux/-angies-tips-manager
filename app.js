@@ -28,6 +28,7 @@ const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
+const LONG_SHIFT_MIN_HOURS = 7.5;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -229,7 +230,7 @@ function classifyShift(shift) {
   const duration = calculateShiftDuration(startHour, endHour);
   const hasClosing = /(?:-|\/)\s*ch\s*$/i.test(text) || /ch/i.test(String(shift.endTime || '')) || lower.endsWith('ch');
   if (hasClosing || (startHour !== null && startHour >= 16)) return { type: 'shift-evening', total: 'S', shiftType: 'evening' };
-  if (duration !== null && duration >= 7.5) return { type: 'shift-long', total: 'P', shiftType: 'long' };
+  if (duration !== null && duration >= LONG_SHIFT_MIN_HOURS) return { type: 'shift-long', total: 'P', shiftType: 'long' };
   if (startHour !== null && startHour < 12) return { type: 'shift-morning', total: 'M', shiftType: 'morning' };
   return { type: 'shift-long', total: 'P', shiftType: 'long' };
 }
