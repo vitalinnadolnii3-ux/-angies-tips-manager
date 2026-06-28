@@ -26,6 +26,7 @@ function resolveUsername(name) {
   if (!cleaned) return '';
   const employeeMatch = state.employees.find(n => n.toLowerCase() === cleaned.toLowerCase());
   if (employeeMatch) return employeeMatch;
+  // I nomi solo numerici non sono accettati per evitare username non identificabili.
   if (/^\d+$/.test(cleaned)) return '';
   if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(cleaned)) return '';
   if (!/^[A-Za-zÀ-ÖØ-öø-ÿ0-9 '.-]{2,40}$/.test(cleaned)) return '';
@@ -59,10 +60,11 @@ async function writeLog(action) {
 async function doLogin() {
   const rawName = $('loginName').value;
   const pwd = $('loginPass').value;
-  if (!normalizeName(rawName)) return alert('Inserisci il nome');
+  const normalizedName = normalizeName(rawName);
+  if (!normalizedName) return alert('Inserisci il nome');
   if (!pwd) return alert('Inserisci la password');
   if (pwd !== LOGIN_PASSWORD) return alert('Password errata');
-  const username = resolveUsername(rawName);
+  const username = resolveUsername(normalizedName);
   if (!username) return alert('Nome non valido');
 
   currentUser = username;
