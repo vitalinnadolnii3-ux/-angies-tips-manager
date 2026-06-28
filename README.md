@@ -1,17 +1,13 @@
-# Angie's Tips Manager
+# Angie's Tips Manager v4
 
-Gestionale gratuito per la gestione delle mance.
+Versione con Cash e Carta separati per:
+- Dashboard
+- Sala
+- Cucina
+- Storico
+- Statistiche
 
-## Come pubblicare con GitHub Pages
-
-1. Carica questi file nel repository:
-   - `index.html`
-   - `style.css`
-   - `app.js`
-2. Vai su Settings → Pages.
-3. Source: Deploy from a branch.
-4. Branch: main.
-5. Folder: /root.
-6. Salva.
-
-Dopo 1-2 minuti avrai il link dell'app.
+Carica e sostituisci tutti questi file:
+- index.html
+- style.css
+- app.js
