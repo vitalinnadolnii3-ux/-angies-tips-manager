@@ -14,7 +14,14 @@ onAuthStateChanged(auth,async u=>{user=u;if(!u){$('login').classList.remove('hid
 
 async function load(){const s=await getDoc(doc(db,'restaurants','angies','settings','main'));if(s.exists()){let d=s.data();state.employees=d.employees||NAMES;state.kitchenPercent=d.kitchenPercent??20}else await setDoc(doc(db,'restaurants','angies','settings','main'),{employees:NAMES,kitchenPercent:20});const days=await getDocs(collection(db,'restaurants','angies','days'));state.history=days.docs.map(x=>x.data()).sort((a,b)=>a.date.localeCompare(b.date))}
 function init(){$('date').value=today();$('from').value=today().slice(0,8)+'01';$('to').value=today();document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>tab(b.dataset.tab,b));$('saveDay').onclick=saveDay;$('clear').onclick=clear;$('export').onclick=csv;$('deleteAll').onclick=deleteAll;$('saveSettings').onclick=saveSettings;$('send').onclick=sendMsg;['cash','card','from','to'].forEach(id=>$(id).oninput=render);render()}
-function tab(id,b){document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));$(id).classList.add('active');document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));b.classList.add('active');render()}
+function tab(id,b){
+document.querySelectorAll('.page').forEach(p=>{p.classList.remove('active');p.style.display='none';});
+const page=$(id);
+if(page){page.classList.add('active');page.style.display='block';}
+document.querySelectorAll('nav button').forEach(x=>x.classList.remove('active'));
+if(b)b.classList.add('active');
+render();
+}
 function split(r){let p=state.kitchenPercent/100,c=r.cash||0,ca=r.card||0,t=r.total??c+ca;return{cash:c,card:ca,total:t,salaCash:r.salaCash??c*(1-p),salaCard:r.salaCard??ca*(1-p),cucinaCash:r.cucinaCash??c*p,cucinaCard:r.cucinaCard??ca*p,sala:r.sala??t*(1-p),kitchen:r.kitchen??t*p}}
 function data(){let cash=+$('cash').value||0,card=+$('card').value||0,h=[...document.querySelectorAll('.hour')].map(x=>+x.value||0),th=h.reduce((a,b)=>a+b,0),p=state.kitchenPercent/100,salaCash=cash*(1-p),salaCard=card*(1-p),cucinaCash=cash*p,cucinaCard=card*p;return{date:$('date').value,cash,card,h,totalHours:th,total:cash+card,salaCash,salaCard,cucinaCash,cucinaCard,sala:salaCash+salaCard,kitchen:cucinaCash+cucinaCard,cashHour:th?salaCash/th:0,cardHour:th?salaCard/th:0}}
 function render(){hours();calc();dash();history();stats();settings()}
