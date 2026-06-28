@@ -698,7 +698,7 @@ function openShiftEditor(uid = '', date = '') {
 }
 
 async function saveShift() {
-  if (!canManageShifts()) return alert('Accesso consentito solo ad admin/manager.');
+  if (!canManageShifts()) return alert('Accesso consentito solo ad Admin/Manager.');
   const uid = $('shiftEmployee').value;
   const date = $('shiftDate').value;
   const isRestDay = $('shiftRestDay').checked;
@@ -736,7 +736,7 @@ async function saveShift() {
 }
 
 async function deleteShift() {
-  if (!canManageShifts()) return alert('Accesso consentito solo ad admin/manager.');
+  if (!canManageShifts()) return alert('Accesso consentito solo ad Admin/Manager.');
   if (!editingShiftId) return;
   if (!confirm('Eliminare questo turno?')) return;
   try {
@@ -849,7 +849,7 @@ function tab(id, b) {
     return;
   }
   if (id === 'turni' && !canManageShifts()) {
-    alert('Accesso consentito solo ad admin/manager.');
+    alert('Accesso consentito solo ad Admin/Manager.');
     return;
   }
   if (id === 'myShifts' && canManageShifts()) {

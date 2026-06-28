@@ -37,6 +37,7 @@ service cloud.firestore {
     }
 
     match /restaurants/angies/shifts/{shiftId} {
+      // Employee reads must query with uid == request.auth.uid to satisfy this rule.
       allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || resource.data.uid == request.auth.uid);
       allow create: if isManagerOrAdmin() &&
         request.resource.data.uid is string &&
