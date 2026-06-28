@@ -7,7 +7,18 @@
   <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
-  <div id="app">
+  <div id="loginScreen" class="login">
+    <div class="login-card">
+      <h1>Angie's Manager</h1>
+      <p>Accedi per continuare</p>
+      <label>Nome della persona<input id="loginName" type="text" autocomplete="username"></label>
+      <label>Password<input id="loginPassword" type="password" autocomplete="current-password"></label>
+      <button id="loginBtn">Accedi</button>
+      <p id="err"></p>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
     <header>
       <div>
         <h1>Angie's Manager</h1>

@@ -1,18 +1,73 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import { getAuth, signInWithEmailAndPassword, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { firebaseConfig } from "./firebase-config.js?v=12";
 
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
+const auth = getAuth(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
+let appStarted = false;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
+const LOGIN_NAME_KEY = 'angies-login-name';
+
+function loginEmail(name) {
+  if (!name) return '';
+  if (name.includes('@')) return name;
+  let normalized = name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '.')
+    .replace(/^\.+|\.+$/g, '');
+  return `${normalized || 'user'}@angies.local`;
+}
+
+function setLoginError(msg = '') {
+  $('err').textContent = msg;
+}
+
+function showLogin(msg = '') {
+  setLoginError(msg);
+  $('loginScreen').classList.remove('hidden');
+  $('app').classList.add('hidden');
+}
+
+function showApp(name) {
+  $('who').textContent = name ? `Online • ${name}` : 'Online';
+  $('loginScreen').classList.add('hidden');
+  $('app').classList.remove('hidden');
+}
+
+async function startApp() {
+  if (appStarted) return;
+  await load();
+  init();
+  render();
+  chatListen();
+  appStarted = true;
+}
+
+async function login() {
+  let name = $('loginName').value.trim();
+  let password = $('loginPassword').value;
+  if (!name || !password) return setLoginError('Inserisci nome e password.');
+  setLoginError('');
+  try {
+    await signInWithEmailAndPassword(auth, loginEmail(name), password);
+    localStorage.setItem(LOGIN_NAME_KEY, name);
+  } catch(e) {
+    console.error('Errore login:', e);
+    setLoginError('Credenziali non valide.');
+  }
+}
 
 // LOAD DATA FROM FIRESTORE
 async function load() {
@@ -404,10 +459,18 @@ function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
 
-// START APP - ACCESSO IMMEDIATO
-window.addEventListener('load', async () => {
-  await load();
-  init();
-  render();
-  chatListen();
+// START APP - ACCESSO CON LOGIN
+window.addEventListener('load', () => {
+  $('loginBtn').onclick = login;
+  $('loginName').onkeypress = e => { if (e.key === 'Enter') login(); };
+  $('loginPassword').onkeypress = e => { if (e.key === 'Enter') login(); };
+  showLogin();
+
+  onAuthStateChanged(auth, async user => {
+    if (!user) return showLogin();
+    let savedName = localStorage.getItem(LOGIN_NAME_KEY);
+    let userName = savedName || (user.email ? user.email.split('@')[0] : '');
+    showApp(userName);
+    await startApp();
+  });
 });
