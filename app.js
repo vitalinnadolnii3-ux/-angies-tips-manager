@@ -1,5 +1,5 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore";
+import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { firebaseConfig } from "./firebase-config.js?v=12";
 
 const fbApp = initializeApp(firebaseConfig);
@@ -212,6 +212,7 @@ async function saveDay() {
     clear();
     render();
   } catch(e) {
+    console.error('Errore salvataggio:', e);
     alert('Errore salvataggio: ' + e.message);
   }
 }
@@ -260,7 +261,7 @@ function history() {
       html += `<td>${euro(empTotal)}</td>`;
     });
     
-    html += `<td>${euro(salaData.salaCash)}</td><td>${euro(salaData.salaCard)}</td><td>${euro(salaData.salaCash + salaData.salaCard)}</td><td>${euro(salaData.cucinaCash)}</td><td>${euro(salaData.cucinaCard)}</td><td>${euro(salaData.cucinaCash + salaData.cucinaCard)}</td><td><strong>${euro(r.total)}</strong></td><td><button onclick="delDay(${i})">✕</button></td></tr>`;
+    html += `<td>${euro(salaData.salaCash)}</td><td>${euro(salaData.salaCard)}</td><td>${euro(salaData.salaCash + salaData.salaCard)}</td><td>${euro(salaData.cucinaCash)}</td><td>${euro(salaData.cucinaCard)}</td><td>${euro(salaData.cucinaCash + salaData.cucinaCard)}</td><td><b>${euro(r.total)}</b></td><td><button onclick="delDay(${i})">❌</button></td></tr>`;
   });
   $('hist').innerHTML = html;
 }
@@ -274,6 +275,7 @@ window.delDay = async i => {
     await deleteDoc(doc(db, 'restaurants', 'angies', 'days', d));
     render();
   } catch(e) {
+    console.error('Errore cancellazione:', e);
     alert('Errore cancellazione: ' + e.message);
   }
 };
@@ -314,6 +316,7 @@ async function saveSettings() {
     alert('Impostazioni salvate!');
     render();
   } catch(e) {
+    console.error('Errore: ', e);
     alert('Errore: ' + e.message);
   }
 }
@@ -330,6 +333,8 @@ function chatListen() {
       box.innerHTML += `<div class="msg"><strong>${esc(msg.name)}</strong>: ${esc(msg.text)}</div>`;
     });
     box.scrollTop = box.scrollHeight;
+  }, err => {
+    console.error('Errore chat listener:', err);
   });
 }
 
@@ -345,6 +350,7 @@ async function sendMsg() {
     });
     $('msg').value = '';
   } catch(e) {
+    console.error('Errore invio messaggio:', e);
     alert('Errore: ' + e.message);
   }
 }
