@@ -19,9 +19,13 @@ const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const LOGIN_NAME_KEY = 'angies-login-name';
 
 function loginEmail(name) {
-  if (!name) return '';
-  if (name.includes('@')) return name;
-  let normalized = name
+  let raw = String(name || '').trim();
+  if (!raw) return '';
+  if (raw.includes('@')) {
+    let email = raw.toLowerCase();
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+  }
+  let normalized = raw
     .toLowerCase()
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -59,13 +63,20 @@ async function login() {
   let name = $('loginName').value.trim();
   let password = $('loginPassword').value;
   if (!name || !password) return setLoginError('Inserisci nome e password.');
+  if (password.length < 6) return setLoginError('La password deve avere almeno 6 caratteri.');
+  let email = loginEmail(name);
+  if (!email) return setLoginError('Nome non valido.');
   setLoginError('');
   try {
-    await signInWithEmailAndPassword(auth, loginEmail(name), password);
+    await signInWithEmailAndPassword(auth, email, password);
     localStorage.setItem(LOGIN_NAME_KEY, name);
   } catch(e) {
     console.error('Errore login:', e);
-    setLoginError('Credenziali non valide.');
+    if (e.code === 'auth/invalid-credential' || e.code === 'auth/user-not-found' || e.code === 'auth/wrong-password') {
+      setLoginError('Credenziali non valide.');
+    } else {
+      setLoginError('Errore di connessione. Riprova.');
+    }
   }
 }
 
@@ -469,7 +480,7 @@ window.addEventListener('load', () => {
   onAuthStateChanged(auth, async user => {
     if (!user) return showLogin();
     let savedName = localStorage.getItem(LOGIN_NAME_KEY);
-    let userName = savedName || (user.email ? user.email.split('@')[0] : '');
+    let userName = savedName || (user.email ? user.email.split('@')[0] : 'Utente');
     showApp(userName);
     await startApp();
   });
