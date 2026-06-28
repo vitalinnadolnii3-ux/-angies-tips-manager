@@ -7,12 +7,23 @@
   <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
-  <div id="app">
+  <section id="loginScreen" class="login">
+    <div class="login-card">
+      <h1>Angie's</h1>
+      <p>Accedi a Manager</p>
+      <label>Nome utente<input id="loginName" autocomplete="username" placeholder="Inserisci il tuo nome"></label>
+      <label>Password<input id="loginPass" type="password" autocomplete="current-password" placeholder="Inserisci la password"></label>
+      <button id="loginBtn">Accedi</button>
+    </div>
+  </section>
+
+  <div id="app" class="hidden">
     <header>
       <div>
         <h1>Angie's Manager</h1>
         <p id="who">Online</p>
       </div>
+      <button id="logoutBtn">Logout</button>
     </header>
 
     <nav>
