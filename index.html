@@ -7,7 +7,18 @@
   <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
-  <div id="app">
+  <section id="login" class="login">
+    <form id="loginForm" class="login-card">
+      <h1>Angie's Manager</h1>
+      <p>Accedi per continuare</p>
+      <label>Username<input id="loginUser" type="text" autocomplete="username"></label>
+      <label>Password<input id="loginPass" type="password" autocomplete="current-password"></label>
+      <button type="submit">Accedi</button>
+      <p id="loginError"></p>
+    </form>
+  </section>
+
+  <div id="app" class="hidden">
     <header>
       <div>
         <h1>Angie's Manager</h1>
@@ -99,6 +110,7 @@
         </div>
         <div class="actions">
           <button id="saveSet">Salva impostazioni</button>
+          <button id="logoutBtn" class="danger" type="button">Logout</button>
         </div>
       </section>
     </main>

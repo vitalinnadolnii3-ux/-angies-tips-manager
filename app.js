@@ -6,8 +6,13 @@ const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
+const LOGIN_USER = 'Test';
+const LOGIN_PASS = String.fromCharCode(116, 101, 115, 116);
+const SESSION_KEY = 'angiesSessionUser';
+const SESSION_TOKEN_KEY = 'angiesSessionToken';
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
+let currentUser = '';
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -50,7 +55,56 @@ function init() {
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
   $('saveSet').onclick = saveSettings;
+  $('logoutBtn').onclick = logout;
   $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
+}
+
+function showLogin() {
+  $('app').classList.add('hidden');
+  $('login').classList.remove('hidden');
+  $('loginPass').value = '';
+}
+
+function showApp() {
+  $('login').classList.add('hidden');
+  $('app').classList.remove('hidden');
+  $('who').textContent = `Online as: ${currentUser}`;
+}
+
+function sessionToken() {
+  return btoa(`${LOGIN_USER}:${LOGIN_PASS}`);
+}
+
+function sessionUser() {
+  const user = localStorage.getItem(SESSION_KEY);
+  const token = localStorage.getItem(SESSION_TOKEN_KEY);
+  return user === LOGIN_USER && token === sessionToken() ? user : '';
+}
+
+function login(e) {
+  e.preventDefault();
+  const user = $('loginUser').value.trim();
+  const pass = $('loginPass').value;
+  if (user === LOGIN_USER && pass === LOGIN_PASS) {
+    currentUser = LOGIN_USER;
+    localStorage.setItem(SESSION_KEY, currentUser);
+    localStorage.setItem(SESSION_TOKEN_KEY, sessionToken());
+    $('loginError').textContent = '';
+    startApp();
+    return;
+  }
+  $('loginError').textContent = 'Credenziali non valide';
+}
+
+function logout() {
+  currentUser = '';
+  localStorage.removeItem(SESSION_KEY);
+  localStorage.removeItem(SESSION_TOKEN_KEY);
+  if (unsub) {
+    unsub();
+    unsub = null;
+  }
+  showLogin();
 }
 
 // TAB NAVIGATION
@@ -345,7 +399,7 @@ async function sendMsg() {
   try {
     await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
       text: text,
-      name: 'User-' + Math.random().toString(36).substr(2, 9),
+      name: currentUser || 'User',
       createdAt: serverTimestamp()
     });
     $('msg').value = '';
@@ -404,10 +458,21 @@ function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
 
-// START APP - ACCESSO IMMEDIATO
-window.addEventListener('load', async () => {
+// START APP AFTER LOGIN
+async function startApp() {
+  showApp();
   await load();
   init();
   render();
   chatListen();
+}
+
+window.addEventListener('load', async () => {
+  $('loginForm').addEventListener('submit', login);
+  currentUser = sessionUser();
+  if (currentUser) {
+    await startApp();
+    return;
+  }
+  showLogin();
 });
