@@ -833,7 +833,7 @@ function syncShiftEditorRestState() {
   $('shiftRestDay').checked = isRest;
   $('shiftStartWrap').classList.toggle('hidden', isRest);
   $('shiftEndWrap').classList.toggle('hidden', isRest);
-  if (isRest) $('shiftText').value = 'R';
+  if (isRest && !String($('shiftText').value || '').trim()) $('shiftText').value = 'R';
 }
 
 function clearShiftEditor() {

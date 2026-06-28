@@ -36,7 +36,7 @@ service cloud.firestore {
     }
 
     function canManageShifts() {
-      return isAdmin() || isManagerOrAdmin() || isResponsible();
+      return isManagerOrAdmin() || isResponsible();
     }
 
     // New helper functions reading from /users/ collection
