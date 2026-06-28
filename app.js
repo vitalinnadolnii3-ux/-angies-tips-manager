@@ -67,7 +67,14 @@ async function doLogin() {
     cred = await signInWithEmailAndPassword(auth, email, pwd);
   } catch (e) {
     if (e?.code === 'auth/user-not-found' || e?.code === 'auth/invalid-credential') {
-      cred = await createUserWithEmailAndPassword(auth, email, pwd);
+      const shouldCreate = confirm('Credenziali non trovate. Vuoi creare un nuovo account con questa email?');
+      if (!shouldCreate) return;
+      try {
+        cred = await createUserWithEmailAndPassword(auth, email, pwd);
+      } catch (createErr) {
+        console.error('Errore creazione account:', createErr);
+        return alert('Errore login: ' + createErr.message);
+      }
     } else {
       console.error('Errore login:', e);
       return alert('Errore login: ' + e.message);
@@ -77,8 +84,6 @@ async function doLogin() {
   localStorage.setItem(SESSION_KEY, currentUser);
   $('who').textContent = currentUser;
   $('loginPass').value = '';
-  await load();
-  render();
   showApp();
   chatListen();
   writeLog('login');
@@ -86,12 +91,13 @@ async function doLogin() {
 
 async function logout() {
   const userToLog = currentUser;
-  await writeLog('logout', userToLog);
   try {
     await signOut(auth);
   } catch (e) {
     console.error('Errore logout:', e);
+    return alert('Errore logout: ' + e.message);
   }
+  writeLog('logout', userToLog);
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
   $('who').textContent = 'Online';
