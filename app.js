@@ -33,8 +33,14 @@ const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 const normalizeEmail = s => String(s || '').trim().toLowerCase();
-const isAdmin = () => currentUserRole === 'Admin';
-const canManageShifts = () => currentUserRole === 'Admin' || currentUserRole === 'Manager';
+function getCurrentUserRole() { return currentUserRole; }
+const isAdmin = () => currentUserRole.toLowerCase() === 'admin';
+const isManager = () => currentUserRole.toLowerCase() === 'manager';
+const isWaiter = () => currentUserRole.toLowerCase() === 'waiter';
+const canManageShifts = () => isAdmin() || isManager();
+const canManageUsers = () => isAdmin();
+const canViewAllData = () => isAdmin() || isManager();
+const canViewUserData = (targetUid) => isAdmin() || isManager() || targetUid === currentUserUid;
 
 function getFriendlyFirestoreMessage(error, fallback = 'Si è verificato un errore.') {
   const code = String(error?.code || '').trim().toLowerCase();
@@ -94,6 +100,14 @@ function employeeCollection() {
 
 function employeeDoc(uid) {
   return doc(db, 'restaurants', 'angies', 'employees', uid);
+}
+
+function usersCollection() {
+  return collection(db, 'restaurants', 'angies', 'users');
+}
+
+function userDoc(uid) {
+  return doc(db, 'restaurants', 'angies', 'users', uid);
 }
 
 function shiftCollection() {
@@ -233,6 +247,15 @@ function syncShiftTabVisibility() {
     tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
   if (canManageShifts() && $('myShifts').classList.contains('active')) {
+    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+  }
+}
+
+function syncSettingsTabVisibility() {
+  const settingsTabBtn = $('settingsTabBtn');
+  if (!settingsTabBtn) return;
+  settingsTabBtn.classList.toggle('hidden', !isAdmin());
+  if (!isAdmin() && $('settings').classList.contains('active')) {
     tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
 }
@@ -397,6 +420,23 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
   };
   if (isCreate) payload.createdAt = serverTimestamp();
   await setDoc(employeeDoc(uid), payload, { merge: !isCreate });
+
+  // Sync role to /users/ collection for RBAC
+  // /users/ uses lowercase roles ('admin','manager','waiter') per the data model spec
+  const userPayload = {
+    email: data.email,
+    name: data.name,
+    role: String(data.role || '').toLowerCase(),
+    active: data.enabled !== false,
+    updatedAt: serverTimestamp()
+  };
+  if (isCreate) userPayload.createdAt = serverTimestamp();
+  try {
+    await setDoc(userDoc(uid), userPayload, { merge: !isCreate });
+  } catch (e) {
+    // Non-fatal: /users/ sync may fail if caller lacks permission
+    console.warn('Avviso: sincronizzazione /users/ non riuscita:', e.message);
+  }
 }
 
 async function createEmployee() {
@@ -570,6 +610,12 @@ async function removeEmployee(id) {
   }
   try {
     await deleteDoc(employeeDoc(employee.id));
+    // Also delete /users/ document for the RBAC system
+    try {
+      await deleteDoc(userDoc(employee.id));
+    } catch (e) {
+      console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
+    }
     await writeLog(`employee_delete:${employee.id}`);
     if (editingEmployeeId === employee.id) clearEmployeeForm();
     await loadEmployees();
@@ -586,26 +632,42 @@ async function loadCurrentUserProfile(user) {
   currentUserRole = '';
 
   try {
-    const profileSnap = await getDoc(employeeDoc(user.uid));
-    if (profileSnap.exists()) {
-      const profile = profileSnap.data();
-      const enabled = profile.enabled !== false;
-      if (!enabled) {
+    // Check /users/ collection first (new RBAC system)
+    const userSnap = await getDoc(userDoc(user.uid));
+    if (userSnap.exists()) {
+      const profile = userSnap.data();
+      const active = profile.active !== false;
+      if (!active) {
         alert('Account disabilitato. Contatta un amministratore.');
         await signOut(auth);
         return false;
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
-      currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      // /users/ collection stores roles as lowercase ('admin','manager','waiter')
+      currentUserRole = profile.role || 'waiter';
     } else {
-      currentUserRole = 'Waiter';
-      await upsertEmployeeProfile(user.uid, {
-        name: deriveNameFromEmail(user.email),
-        email: currentUser,
-        role: currentUserRole,
-        enabled: true
-      }, true);
-      await writeLog('employee_profile_bootstrap');
+      // Fallback to /employees/ collection for backwards compatibility
+      const profileSnap = await getDoc(employeeDoc(user.uid));
+      if (profileSnap.exists()) {
+        const profile = profileSnap.data();
+        const enabled = profile.enabled !== false;
+        if (!enabled) {
+          alert('Account disabilitato. Contatta un amministratore.');
+          await signOut(auth);
+          return false;
+        }
+        currentUserName = normalizeName(profile.name) || currentUserName;
+        currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      } else {
+        currentUserRole = 'Waiter';
+        await upsertEmployeeProfile(user.uid, {
+          name: deriveNameFromEmail(user.email),
+          email: currentUser,
+          role: currentUserRole,
+          enabled: true
+        }, true);
+        await writeLog('employee_profile_bootstrap');
+      }
     }
   } catch (e) {
     console.error('Errore caricamento profilo utente:', e);
@@ -750,7 +812,8 @@ function openShiftEditor(uid = '', date = '') {
   $('shiftNotes').value = existing?.notes || '';
   $('shiftRestDay').checked = Boolean(existing?.isRestDay);
   syncShiftEditorRestState();
-  $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId);
+  // Delete button: only visible to admin (not manager)
+  $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId || !isAdmin());
   $('shiftEditor').classList.remove('hidden');
 }
 
@@ -793,7 +856,10 @@ async function saveShift() {
 }
 
 async function deleteShift() {
-  if (!canManageShifts()) return alert('Accesso consentito solo ad Admin/Manager.');
+  if (!isAdmin()) {
+    console.warn('Solo admin possono eliminare i turni.');
+    return alert('Solo gli admin possono eliminare i turni. Questa azione richiede permessi di amministratore.');
+  }
   if (!editingShiftId) return;
   if (!confirm('Eliminare questo turno?')) return;
   try {
@@ -910,11 +976,18 @@ function init() {
 // TAB NAVIGATION
 function tab(id, b) {
   if (id === 'employeeManagement' && !isAdmin()) {
-    alert('Accesso consentito solo agli admin.');
+    console.warn('Solo admin possono gestire i dipendenti.');
+    alert('Questa azione richiede permessi di amministratore.');
+    return;
+  }
+  if (id === 'settings' && !isAdmin()) {
+    console.warn('Accesso alle impostazioni riservato agli admin.');
+    alert('Non hai i permessi per accedere a questa sezione.');
     return;
   }
   if (id === 'turni' && !canManageShifts()) {
-    alert('Accesso consentito solo ad Admin/Manager.');
+    console.warn('Solo admin/manager possono gestire i turni.');
+    alert('Solo admin/manager possono gestire i turni.');
     return;
   }
   if (id === 'myShifts' && canManageShifts()) {
@@ -1367,6 +1440,7 @@ window.addEventListener('load', async () => {
         clearShiftEditor();
         syncEmployeeTabVisibility();
         syncShiftTabVisibility();
+        syncSettingsTabVisibility();
         renderShifts();
         showLogin();
         return;
@@ -1382,6 +1456,7 @@ window.addEventListener('load', async () => {
       await loadEmployees();
       syncEmployeeTabVisibility();
       syncShiftTabVisibility();
+      syncSettingsTabVisibility();
       populateShiftEmployeeOptions();
       attachShiftListeners();
       render();
@@ -1412,6 +1487,7 @@ window.addEventListener('load', async () => {
       clearShiftEditor();
       syncEmployeeTabVisibility();
       syncShiftTabVisibility();
+      syncSettingsTabVisibility();
       renderShifts();
       showLogin();
     }
