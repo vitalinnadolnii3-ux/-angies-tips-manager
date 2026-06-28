@@ -420,10 +420,11 @@ function chatListen() {
 async function sendMsg() {
   let text = $('msg').value.trim();
   if (!text) return;
+  if (!currentUser) return alert('Effettua il login');
   try {
     await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
       text: text,
-      name: currentUser || 'Utente',
+      name: currentUser,
       createdAt: serverTimestamp()
     });
     $('msg').value = '';
