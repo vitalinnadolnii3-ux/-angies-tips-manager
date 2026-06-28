@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Angie's Manager v12</title>
-  <link rel="stylesheet" href="style.css?v=12">
+  <title>Angie's Manager v13</title>
+  <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
   <section id="loginScreen" class="login">
@@ -64,7 +64,7 @@
         </div>
         <div class="actions">
           <button id="saveBtn">Salva giornata</button>
-          <button id="shareBtn" class="whatsapp">Condividi su WhatsApp</button>
+          <button id="shareBtn" class="whatsapp">📱 Condividi su WhatsApp</button>
           <button id="clearBtn" class="clear">Pulisci</button>
         </div>
       </section>
@@ -87,9 +87,13 @@
           <label>Al<input id="to" type="date"></label>
         </div>
         <div class="cards">
-          <div class="card"><span>Totale</span><b id="sTotal">0,00 €</b></div>
+          <div class="card"><span>Totale periodo</span><b id="sTotal">0,00 €</b></div>
           <div class="card cash"><span>Cash</span><b id="sCash">0,00 €</b></div>
           <div class="card card"><span>Carta</span><b id="sCard">0,00 €</b></div>
+        </div>
+        <div class="panel">
+          <h3>📊 Mance per dipendente</h3>
+          <table id="empStats"></table>
         </div>
       </section>
 
@@ -118,6 +122,6 @@
     </main>
   </div>
 
-  <script type="module" src="app.js?v=12"></script>
+  <script type="module" src="app.js?v=13"></script>
 </body>
 </html>
