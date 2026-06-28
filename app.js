@@ -17,13 +17,23 @@ const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 const LOGIN_NAME_KEY = 'angies-login-name';
+const LOGIN_EMAIL_DOMAIN = 'angies.local';
+const DEFAULT_LOGIN_LOCAL_PART = 'user';
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+function sanitizeLoginName(name) {
+  return String(name || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+}
 
 function loginEmail(name) {
-  let raw = String(name || '').trim();
+  let raw = sanitizeLoginName(name);
   if (!raw) return '';
   if (raw.includes('@')) {
     let email = raw.toLowerCase();
-    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ? email : '';
+    return isValidEmail(email) ? email : '';
   }
   let normalized = raw
     .toLowerCase()
@@ -31,7 +41,7 @@ function loginEmail(name) {
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, '.')
     .replace(/^\.+|\.+$/g, '');
-  return `${normalized || 'user'}@angies.local`;
+  return `${normalized || DEFAULT_LOGIN_LOCAL_PART}@${LOGIN_EMAIL_DOMAIN}`;
 }
 
 function setLoginError(msg = '') {
@@ -60,10 +70,9 @@ async function startApp() {
 }
 
 async function login() {
-  let name = $('loginName').value.trim();
+  let name = sanitizeLoginName($('loginName').value);
   let password = $('loginPassword').value;
   if (!name || !password) return setLoginError('Inserisci nome e password.');
-  if (password.length < 6) return setLoginError('La password deve avere almeno 6 caratteri.');
   let email = loginEmail(name);
   if (!email) return setLoginError('Nome non valido.');
   setLoginError('');
@@ -72,7 +81,7 @@ async function login() {
     localStorage.setItem(LOGIN_NAME_KEY, name);
   } catch(e) {
     console.error('Errore login:', e);
-    if (e.code === 'auth/invalid-credential' || e.code === 'auth/user-not-found' || e.code === 'auth/wrong-password') {
+    if (e.code && e.code.startsWith('auth/') && e.code !== 'auth/network-request-failed') {
       setLoginError('Credenziali non valide.');
     } else {
       setLoginError('Errore di connessione. Riprova.');
@@ -479,7 +488,7 @@ window.addEventListener('load', () => {
 
   onAuthStateChanged(auth, async user => {
     if (!user) return showLogin();
-    let savedName = localStorage.getItem(LOGIN_NAME_KEY);
+    let savedName = sanitizeLoginName(localStorage.getItem(LOGIN_NAME_KEY));
     let userName = savedName || (user.email ? user.email.split('@')[0] : 'Utente');
     showApp(userName);
     await startApp();
