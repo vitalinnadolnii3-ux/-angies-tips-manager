@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Angie's Manager v14</title>
-  <link rel="stylesheet" href="style.css?v=15">
+  <link rel="stylesheet" href="style.css?v=16">
 </head>
 <body>
   <section id="loginScreen" class="login">
@@ -150,13 +150,14 @@
 
       <section id="turni" class="page">
         <h2>Turni</h2>
+        <div id="shiftStatus" class="status-message hidden" role="status" aria-live="polite"></div>
         <div class="actions shift-week-nav">
           <button id="shiftPrevWeekBtn" class="clear">Settimana precedente</button>
           <button id="shiftCurrentWeekBtn">Settimana corrente</button>
           <button id="shiftNextWeekBtn" class="clear">Settimana successiva</button>
           <button id="newShiftBtn">Nuovo turno</button>
         </div>
-        <div class="panel">
+        <div class="panel table-scroll">
           <table id="shiftsTable" class="shift-table"></table>
         </div>
         <div id="shiftEditor" class="panel hidden">
@@ -191,18 +192,20 @@
 
       <section id="myShifts" class="page">
         <h2>I miei turni</h2>
+        <div id="myShiftStatus" class="status-message hidden" role="status" aria-live="polite"></div>
         <div class="actions shift-week-nav">
           <button id="myShiftPrevWeekBtn" class="clear">Settimana precedente</button>
           <button id="myShiftCurrentWeekBtn">Settimana corrente</button>
           <button id="myShiftNextWeekBtn" class="clear">Settimana successiva</button>
         </div>
-        <div class="panel">
+        <div class="panel table-scroll">
           <table id="myShiftsTable" class="shift-table"></table>
         </div>
+        <div id="myShiftsMobileList" class="shift-mobile-list"></div>
       </section>
     </main>
   </div>
 
-  <script type="module" src="app.js?v=16"></script>
+  <script type="module" src="app.js?v=17"></script>
 </body>
 </html>
