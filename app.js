@@ -120,6 +120,7 @@ function init() {
   
   $('saveBtn').onclick = saveDay;
   $('clearBtn').onclick = () => clear();
+  $('shareBtn').onclick = shareWhatsApp;
   $('export').onclick = exportCSV;
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
@@ -216,7 +217,7 @@ function hours() {
   let totalHours = [...document.querySelectorAll('.hour')].reduce((sum, x) => sum + (+x.value || 0), 0);
   
   state.employees.forEach((n, i) => {
-    html += `<tr><td>${esc(n)}</td><td><input class="hour" type="number" step="0.5" value="0"></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
+    html += `<tr><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
   $('hours').innerHTML = html;
   
@@ -293,6 +294,32 @@ async function saveDay() {
     console.error('Errore salvataggio:', e);
     alert('Errore salvataggio: ' + e.message);
   }
+}
+
+// SHARE ON WHATSAPP
+function shareWhatsApp() {
+  let d = data();
+  if (!d.date) return alert('Seleziona una data.');
+  if (d.total <= 0) return alert('Nessun dato da condividere.');
+  
+  let message = `📊 *Riepilogo Giornata: ${fmt(d.date)}*\n\n`;
+  message += `💰 *Totale Mance:* ${euro(d.total)}\n`;
+  message += `💵 *Cash:* ${euro(d.cash)}\n`;
+  message += `💳 *Carta:* ${euro(d.card)}\n`;
+  message += `⏱️ *Ore Totali:* ${d.totalHours}\n\n`;
+  
+  message += `*Sala:*\n`;
+  message += `  💵 Cash: ${euro(d.salaCash)}\n`;
+  message += `  💳 Carta: ${euro(d.salaCard)}\n`;
+  message += `  📈 Totale: ${euro(d.salaCash + d.salaCard)}\n\n`;
+  
+  message += `*Cucina:*\n`;
+  message += `  💵 Cash: ${euro(d.cucinaCash)}\n`;
+  message += `  💳 Carta: ${euro(d.cucinaCard)}\n`;
+  message += `  📈 Totale: ${euro(d.cucinaCash + d.cucinaCard)}\n`;
+  
+  let whatsappUrl = `https://wa.me/?text=${encodeURIComponent(message)}`;
+  window.open(whatsappUrl, '_blank');
 }
 
 // CLEAR FORM
