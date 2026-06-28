@@ -5,10 +5,18 @@ Carica nella root del repository:
 - style.css
 - app.js
 - firebase-config.js
+- firebase.json
+- .firebaserc
 - FIRESTORE_RULES.txt
+- firestore.indexes.json
 - README.md
 
 Dopo il caricamento vai su Firebase > Firestore Database > Regole e incolla il contenuto di FIRESTORE_RULES.txt.
+
+In alternativa puoi pubblicare automaticamente regole e indici con Firebase CLI:
+- `npm install -g firebase-tools`
+- `firebase login`
+- `firebase deploy --only firestore`
 
 Poi crea un utente in Firebase > Authentication > Users > Add user.
 
@@ -24,5 +32,5 @@ Se `createEmployeeAuthUser` non è disponibile, la creazione usa fallback client
 Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
 
-Nota: dopo ogni aggiornamento delle regole, pubblica `FIRESTORE_RULES.txt` su Firestore prima di usare la gestione turni.
-Per i turni con query `uid + date` può servire un indice composito Firestore (uid ASC, date ASC) se richiesto dalla console Firebase.
+Nota: `firestore.indexes.json` contiene l'indice composito necessario per i turni dei dipendenti (`uid` ASC, `date` ASC).
+Dopo ogni aggiornamento di regole o indici esegui `firebase deploy --only firestore` prima di usare la gestione turni.

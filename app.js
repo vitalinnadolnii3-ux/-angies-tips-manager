@@ -36,6 +36,33 @@ const normalizeEmail = s => String(s || '').trim().toLowerCase();
 const isAdmin = () => currentUserRole === 'Admin';
 const canManageShifts = () => currentUserRole === 'Admin' || currentUserRole === 'Manager';
 
+function getFriendlyFirestoreMessage(error, fallback = 'Si è verificato un errore.') {
+  const code = String(error?.code || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim();
+  if (code === 'failed-precondition' || /requires an index/i.test(message)) {
+    return 'I turni non sono disponibili perché manca un indice Firestore. Pubblica regole e indici con Firebase CLI e riprova.';
+  }
+  if (code === 'permission-denied') {
+    return 'Non hai i permessi per visualizzare questi turni.';
+  }
+  if (code === 'unauthenticated') {
+    return 'Sessione scaduta. Effettua di nuovo il login.';
+  }
+  return fallback;
+}
+
+function setStatus(id, message = '', type = 'info') {
+  const node = $(id);
+  if (!node) return;
+  node.textContent = message;
+  node.className = `status-message status-${type}${message ? '' : ' hidden'}`;
+}
+
+function setShiftStatus(message = '', type = 'info') {
+  setStatus('shiftStatus', message, type);
+  setStatus('myShiftStatus', message, type);
+}
+
 function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
 }
@@ -646,7 +673,37 @@ function renderShiftTable(tableId, allowEdit) {
 function renderShifts() {
   renderShiftTable('shiftsTable', canManageShifts());
   renderShiftTable('myShiftsTable', false);
+  renderMyShiftCards();
   maybeShowTodayShiftPopup();
+}
+
+function renderMyShiftCards() {
+  const list = $('myShiftsMobileList');
+  if (!list) return;
+  if (!currentUserUid || canManageShifts()) {
+    list.innerHTML = '';
+    return;
+  }
+  const weekDates = getCurrentWeekDates();
+  const shiftByKey = shiftMapByKey();
+  list.innerHTML = weekDates.map(day => {
+    const shift = shiftByKey.get(`${currentUserUid}__${day.date}`);
+    const shiftInfo = shift ? classifyShift(shift) : { type: 'shift-empty' };
+    const shiftText = !shift ? 'Nessun turno assegnato' : (shift.isRestDay ? 'Riposo' : (getShiftDisplayText(shift) || 'Turno assegnato'));
+    const role = shift?.role ? `<span class="shift-mobile-meta">Ruolo: ${esc(shift.role)}</span>` : '';
+    const notes = shift?.notes ? `<span class="shift-mobile-meta">Note: ${esc(shift.notes)}</span>` : '';
+    return `<article class="shift-mobile-card ${shiftInfo.type || 'shift-empty'}">
+      <div class="shift-mobile-head">
+        <strong>${day.dayName}</strong>
+        <span>${day.shortDate}</span>
+      </div>
+      <div class="shift-mobile-body">
+        <span class="shift-mobile-value">${esc(shiftText)}</span>
+        ${role}
+        ${notes}
+      </div>
+    </article>`;
+  }).join('');
 }
 
 function syncShiftEditorRestState() {
@@ -756,9 +813,13 @@ function attachShiftListeners() {
   }
   if (!currentUserUid) {
     shiftsData = [];
+    setShiftStatus('');
     renderShifts();
     return;
   }
+  shiftsData = [];
+  setShiftStatus('Caricamento turni...', 'info');
+  renderShifts();
   const weekDates = getCurrentWeekDates();
   let q = query(
     shiftCollection(),
@@ -776,11 +837,15 @@ function attachShiftListeners() {
     );
   }
   shiftsUnsub = onSnapshot(q, snap => {
+    setShiftStatus('');
     shiftsData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
     renderShifts();
   }, err => {
     console.error('Errore caricamento turni:', err);
-    alert('Errore caricamento turni: ' + err.message);
+    shiftsData = [];
+    clearShiftEditor();
+    setShiftStatus(getFriendlyFirestoreMessage(err, 'Impossibile caricare i turni.'), 'error');
+    renderShifts();
   });
 }
 

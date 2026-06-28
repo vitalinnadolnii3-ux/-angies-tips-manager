@@ -37,7 +37,7 @@ service cloud.firestore {
     }
 
     match /restaurants/angies/shifts/{shiftId} {
-      // Employee reads must query with uid == request.auth.uid; otherwise the query is denied.
+      // Waiters can read only their own shifts; managers and admins can read all shifts.
       allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || resource.data.uid == request.auth.uid);
       allow create: if isManagerOrAdmin() &&
         request.resource.data.uid is string &&
