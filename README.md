@@ -1,13 +1,22 @@
-# Angie's Tips Manager v4
+# Angie's Manager v6 - Login + Chat
 
-Versione con Cash e Carta separati per:
-- Dashboard
-- Sala
-- Cucina
-- Storico
-- Statistiche
+Questa versione include:
+- Login con Firebase Authentication
+- Database cloud Firestore
+- Mance Cash/Carta separate per Sala e Cucina
+- Storico e statistiche
+- Chat interna in tempo reale
 
-Carica e sostituisci tutti questi file:
+## File da caricare su GitHub
 - index.html
 - style.css
 - app.js
+- firebase-config.js
+
+## Prima configurazione Firebase
+1. Crea un progetto su Firebase.
+2. Attiva Authentication → Email/Password.
+3. Attiva Firestore Database.
+4. Crea una Web App.
+5. Copia i dati Firebase dentro `firebase-config.js`.
+6. Carica i file su GitHub.
