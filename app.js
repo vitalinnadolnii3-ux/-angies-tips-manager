@@ -21,7 +21,7 @@ const LOGIN_EMAIL_DOMAIN = 'angies.local';
 const DEFAULT_LOGIN_LOCAL_PART = 'user';
 
 function isValidEmail(email) {
-  return /^[^\s@]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(email) && !email.includes('..');
+  return /^[^\s@]+@[a-z0-9]+([.-][a-z0-9]+)*\.[a-z]{2,}$/i.test(email);
 }
 
 function sanitizeLoginName(name) {
@@ -486,7 +486,7 @@ window.addEventListener('load', () => {
   onAuthStateChanged(auth, async user => {
     if (!user) return showLogin();
     let savedName = sanitizeLoginName(localStorage.getItem(LOGIN_NAME_KEY));
-    let userName = savedName || (user.email ? user.email.split('@')[0] : 'Utente');
+    let userName = savedName || sanitizeLoginName(user.displayName) || 'Utente';
     showApp(userName);
     await startApp();
   });
