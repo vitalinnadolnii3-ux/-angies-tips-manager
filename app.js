@@ -11,6 +11,7 @@ const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
 let currentUser = '';
+let hasLoadedSessionData = false;
 const SESSION_KEY = 'angiesManagerUser';
 
 const $ = id => document.getElementById(id);
@@ -91,13 +92,13 @@ async function doLogin() {
 
 async function logout() {
   const userToLog = currentUser;
+  await writeLog('logout', userToLog);
   try {
     await signOut(auth);
   } catch (e) {
     console.error('Errore logout:', e);
     return alert('Errore logout: ' + e.message);
   }
-  writeLog('logout', userToLog);
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
   $('who').textContent = 'Online';
@@ -583,11 +584,15 @@ window.addEventListener('load', async () => {
       currentUser = user.email || '';
       localStorage.setItem(SESSION_KEY, currentUser);
       $('who').textContent = currentUser;
-      await load();
+      if (!hasLoadedSessionData) {
+        await load();
+        hasLoadedSessionData = true;
+      }
       render();
       showApp();
       chatListen();
     } else {
+      hasLoadedSessionData = false;
       localStorage.removeItem(SESSION_KEY);
       currentUser = '';
       $('who').textContent = 'Online';
