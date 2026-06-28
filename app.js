@@ -44,12 +44,12 @@ function showApp() {
   $('app').classList.remove('hidden');
 }
 
-async function writeLog(action) {
-  if (!currentUser) return;
+async function writeLog(action, username = currentUser) {
+  if (!username) return;
   try {
     await addDoc(collection(db, 'restaurants', 'angies', 'logs'), {
       timestamp: serverTimestamp(),
-      username: currentUser,
+      username,
       action
     });
   } catch (e) {
@@ -73,11 +73,11 @@ async function doLogin() {
   $('loginPass').value = '';
   showApp();
   chatListen();
-  await writeLog('login');
+  writeLog('login');
 }
 
 async function logout() {
-  await writeLog('logout');
+  const userToLog = currentUser;
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
   $('who').textContent = 'Online';
@@ -86,6 +86,7 @@ async function logout() {
     unsub = null;
   }
   showLogin();
+  writeLog('logout', userToLog);
 }
 
 // LOAD DATA FROM FIRESTORE
