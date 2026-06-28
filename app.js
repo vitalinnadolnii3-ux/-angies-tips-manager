@@ -1,7 +1,7 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore";
-import { firebaseConfig } from "./firebase-config.js?v=8";
+import { firebaseConfig } from "./firebase-config.js?v=9";
 
 const fbApp = initializeApp(firebaseConfig);
 const auth = getAuth(fbApp);
@@ -17,25 +17,61 @@ const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 
-// LOGIN
-$('loginBtn').onclick = async () => {
-  try {
-    $('err').textContent = '';
-    await signInWithEmailAndPassword(auth, $('email').value.trim(), $('password').value);
-  } catch(e) {
-    $('err').textContent = 'Accesso non riuscito: ' + e.message;
+// SETUP LOGIN - Esegui dopo che DOM è caricato
+window.addEventListener('load', () => {
+  const loginBtn = $('loginBtn');
+  const logoutBtn = $('logoutBtn');
+  
+  if (loginBtn) {
+    loginBtn.addEventListener('click', async () => {
+      try {
+        const errElement = $('err');
+        errElement.textContent = '';
+        const email = $('email').value.trim();
+        const password = $('password').value;
+        
+        if (!email || !password) {
+          errElement.textContent = 'Inserisci email e password';
+          return;
+        }
+        
+        loginBtn.disabled = true;
+        loginBtn.textContent = 'Accesso in corso...';
+        
+        await signInWithEmailAndPassword(auth, email, password);
+      } catch(e) {
+        console.error('Errore login:', e.code, e.message);
+        const errMsg = e.code === 'auth/user-not-found' ? 'Utente non trovato' :
+                       e.code === 'auth/wrong-password' ? 'Password non corretta' :
+                       e.code === 'auth/invalid-email' ? 'Email non valida' :
+                       e.message;
+        $('err').textContent = 'Errore: ' + errMsg;
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Accedi';
+      }
+    });
   }
-};
+  
+  if (logoutBtn) {
+    logoutBtn.addEventListener('click', () => signOut(auth));
+  }
+});
 
-// LOGOUT
-$('logoutBtn').onclick = () => signOut(auth);
-
-// AUTH STATE
+// AUTH STATE LISTENER
 onAuthStateChanged(auth, async u => {
   user = u;
   if (!u) {
     $('login').classList.remove('hidden');
     $('app').classList.add('hidden');
+    // Resetta il form
+    $('email').value = '';
+    $('password').value = '';
+    $('err').textContent = '';
+    const loginBtn = $('loginBtn');
+    if (loginBtn) {
+      loginBtn.disabled = false;
+      loginBtn.textContent = 'Accedi';
+    }
     return;
   }
   $('login').classList.add('hidden');
@@ -77,13 +113,21 @@ function init() {
     b.onclick = () => tab(b.dataset.tab, b);
   });
   
-  $('saveBtn').onclick = saveDay;
-  $('clearBtn').onclick = () => clear();
-  $('export').onclick = exportCSV;
-  $('deleteAll').onclick = deleteAll;
-  $('send').onclick = sendMsg;
-  $('saveSet').onclick = saveSettings;
-  $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
+  const saveBtn = $('saveBtn');
+  const clearBtn = $('clearBtn');
+  const exportBtn = $('export');
+  const deleteAllBtn = $('deleteAll');
+  const sendBtn = $('send');
+  const setBtn = $('saveSet');
+  const msgInput = $('msg');
+  
+  if (saveBtn) saveBtn.onclick = saveDay;
+  if (clearBtn) clearBtn.onclick = () => clear();
+  if (exportBtn) exportBtn.onclick = exportCSV;
+  if (deleteAllBtn) deleteAllBtn.onclick = deleteAll;
+  if (sendBtn) sendBtn.onclick = sendMsg;
+  if (setBtn) setBtn.onclick = saveSettings;
+  if (msgInput) msgInput.onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
 }
 
 // TAB NAVIGATION
