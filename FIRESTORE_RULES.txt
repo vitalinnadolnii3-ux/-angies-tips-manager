@@ -67,7 +67,7 @@ service cloud.firestore {
         userProfile().data.active != false;
     }
 
-    function isUserManagerOrAdmin() {
+    function isUserManagerAdminOrResponsible() {
       return isUserAdmin() || isUserManager() || isUserResponsible();
     }
 
