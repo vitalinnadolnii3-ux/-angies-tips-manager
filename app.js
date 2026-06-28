@@ -1,86 +1,18 @@
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore";
-import { firebaseConfig } from "./firebase-config.js?v=11";
+import { firebaseConfig } from "./firebase-config.js?v=12";
 
 const fbApp = initializeApp(firebaseConfig);
-const auth = getAuth(fbApp);
 const db = getFirestore(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
-let user = null;
 let unsub = null;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
-
-// LOGIN HANDLER
-window.addEventListener('load', () => {
-  const loginBtn = $('loginBtn');
-  
-  if (loginBtn) {
-    loginBtn.addEventListener('click', async () => {
-      try {
-        const errElement = $('err');
-        errElement.textContent = '';
-        const email = $('email').value.trim();
-        const password = $('password').value;
-        
-        if (!email || !password) {
-          errElement.textContent = 'Inserisci email e password';
-          return;
-        }
-        
-        loginBtn.disabled = true;
-        loginBtn.textContent = 'Accesso in corso...';
-        
-        await signInWithEmailAndPassword(auth, email, password);
-      } catch(e) {
-        console.error('Errore login:', e.code, e.message);
-        const errMsg = e.code === 'auth/user-not-found' ? 'Utente non trovato' :
-                       e.code === 'auth/wrong-password' ? 'Password non corretta' :
-                       e.code === 'auth/invalid-email' ? 'Email non valida' :
-                       e.message;
-        $('err').textContent = 'Errore: ' + errMsg;
-        loginBtn.disabled = false;
-        loginBtn.textContent = 'Accedi';
-      }
-    });
-  }
-  
-  const logoutBtn = $('logoutBtn');
-  if (logoutBtn) {
-    logoutBtn.addEventListener('click', () => signOut(auth));
-  }
-});
-
-// AUTH STATE LISTENER
-onAuthStateChanged(auth, async u => {
-  user = u;
-  if (!u) {
-    $('login').classList.remove('hidden');
-    $('app').classList.add('hidden');
-    $('email').value = '';
-    $('password').value = '';
-    $('err').textContent = '';
-    const loginBtn = $('loginBtn');
-    if (loginBtn) {
-      loginBtn.disabled = false;
-      loginBtn.textContent = 'Accedi';
-    }
-    return;
-  }
-  $('login').classList.add('hidden');
-  $('app').classList.remove('hidden');
-  $('who').textContent = 'Benvenuto, ' + u.email;
-  await load();
-  init();
-  chatListen();
-  render();
-});
 
 // LOAD DATA FROM FIRESTORE
 async function load() {
@@ -408,8 +340,7 @@ async function sendMsg() {
   try {
     await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
       text: text,
-      email: user.email,
-      name: user.email.split('@')[0],
+      name: 'User-' + Math.random().toString(36).substr(2, 9),
       createdAt: serverTimestamp()
     });
     $('msg').value = '';
@@ -466,3 +397,11 @@ function num(n) {
 function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
+
+// START APP - ACCESSO IMMEDIATO
+window.addEventListener('load', async () => {
+  await load();
+  init();
+  render();
+  chatListen();
+});
