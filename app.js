@@ -130,6 +130,8 @@ function init() {
   $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
   $('loginPass').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
   $('loginName').onkeypress = e => { if (e.key === 'Enter') doLogin(); };
+  $('from').onchange = () => stats();
+  $('to').onchange = () => stats();
 }
 
 // TAB NAVIGATION
@@ -148,18 +150,16 @@ function tab(id, b) {
   render();
 }
 
-// SPLIT CALCULATION - CORRETTO
+// SPLIT CALCULATION
 function split(r) {
   let p = state.kitchenPercent / 100;
   let c = r.cash || 0;
   let ca = r.card || 0;
   let t = r.total ?? (c + ca);
   
-  // Cucina prende la percentuale
   let cucinaCash = c * p;
   let cucinaCard = ca * p;
   
-  // Sala prende il resto
   let salaCash = c * (1 - p);
   let salaCard = ca * (1 - p);
   
@@ -209,29 +209,24 @@ function render() {
   settings();
 }
 
-// RENDER HOURS TABLE - CORRETTO
+// RENDER HOURS TABLE
 function hours() {
   let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
-  
-  // Calcola totale ore sala
-  let totalHours = [...document.querySelectorAll('.hour')].reduce((sum, x) => sum + (+x.value || 0), 0);
   
   state.employees.forEach((n, i) => {
     html += `<tr><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
   $('hours').innerHTML = html;
   
-  // Aggiorna i calcoli quando cambiano le ore
   document.querySelectorAll('.hour').forEach((x, i) => {
     x.oninput = () => updateHourCalculations();
   });
   
-  // Aggiorna anche quando cambiano cash/card
   $('cash').oninput = () => updateHourCalculations();
   $('card').oninput = () => updateHourCalculations();
 }
 
-// UPDATE HOUR CALCULATIONS - CORRETTO
+// UPDATE HOUR CALCULATIONS
 function updateHourCalculations() {
   let cash = +$('cash').value || 0;
   let card = +$('card').value || 0;
@@ -242,11 +237,9 @@ function updateHourCalculations() {
   let salaCash = cash * (1 - p);
   let salaCard = card * (1 - p);
   
-  // Prezzo per ora sala
   let pricePerHourCash = totalHours > 0 ? salaCash / totalHours : 0;
   let pricePerHourCard = totalHours > 0 ? salaCard / totalHours : 0;
   
-  // Aggiorna ogni riga
   document.querySelectorAll('.hour').forEach((x, i) => {
     let hours = +x.value || 0;
     let cells = x.parentElement.parentElement.querySelectorAll('[class^="calc-"]');
@@ -345,7 +338,7 @@ function dash() {
   $('dDays').textContent = r.length;
 }
 
-// HISTORY - CORRETTO
+// HISTORY
 function history() {
   let html = '<tr><th>Data</th>';
   state.employees.forEach(n => html += `<th>${esc(n)} (€/ora)</th>`);
@@ -354,13 +347,11 @@ function history() {
   state.history.forEach((r, i) => {
     html += `<tr><td>${fmt(r.date)}</td>`;
     
-    // Calcola prezzo per ora per ogni dipendente
     let totalHours = r.hours ? r.hours.reduce((a, b) => a + b, 0) : 0;
     let salaData = split(r);
     let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
     let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
     
-    // Mostra per ogni dipendente
     (r.hours || []).forEach((h, j) => {
       let empTotal = (pricePerHourCash + pricePerHourCard) * h;
       html += `<td>${euro(empTotal)}</td>`;
@@ -395,14 +386,48 @@ async function deleteAll() {
   render();
 }
 
-// STATS
+// STATS - IMPROVED
 function stats() {
   let f = $('from').value || '0000-01-01';
   let t = $('to').value || '9999-12-31';
   let rows = state.history.filter(r => r.date >= f && r.date <= t);
+  
+  // Totali generali
   $('sTotal').textContent = euro(sum(rows, 'total'));
   $('sCash').textContent = euro(sum(rows, 'cash'));
   $('sCard').textContent = euro(sum(rows, 'card'));
+  
+  // Calcola per dipendente
+  let empStats = {};
+  state.employees.forEach(name => {
+    empStats[name] = { cash: 0, card: 0 };
+  });
+  
+  rows.forEach(day => {
+    if (!day.hours || day.hours.length === 0) return;
+    
+    let totalHours = day.hours.reduce((a, b) => a + b, 0);
+    let salaData = split(day);
+    let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
+    let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
+    
+    day.hours.forEach((h, idx) => {
+      if (idx < state.employees.length) {
+        let empName = state.employees[idx];
+        empStats[empName].cash += pricePerHourCash * h;
+        empStats[empName].card += pricePerHourCard * h;
+      }
+    });
+  });
+  
+  // Render tabella dipendenti
+  let empHtml = '<tr><th>Dipendente</th><th>💵 Cash</th><th>💳 Carta</th><th>📊 Totale</th></tr>';
+  state.employees.forEach(name => {
+    let stats = empStats[name];
+    let total = stats.cash + stats.card;
+    empHtml += `<tr><td class="emp-name">${esc(name)}</td><td>${euro(stats.cash)}</td><td>${euro(stats.card)}</td><td class="emp-total">${euro(total)}</td></tr>`;
+  });
+  $('empStats').innerHTML = empHtml;
 }
 
 // SETTINGS
@@ -472,7 +497,6 @@ function exportCSV() {
     let salaData = split(r);
     let row = [fmt(r.date)];
     
-    // Calcola per ogni dipendente
     let totalHours = r.hours ? r.hours.reduce((a, b) => a + b, 0) : 0;
     let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
     let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
