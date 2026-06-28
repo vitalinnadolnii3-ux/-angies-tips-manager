@@ -17,11 +17,19 @@ const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 const LOGIN_NAME_KEY = 'angies-login-name';
-const LOGIN_EMAIL_DOMAIN = 'angies.local';
+const LOGIN_EMAIL_DOMAIN = 'example.com';
 const DEFAULT_LOGIN_LOCAL_PART = 'user';
 
 function isValidEmail(email) {
-  return /^[^\s@]+@[a-z0-9]+([.-][a-z0-9]+)*\.[a-z]{2,}$/i.test(email);
+  let parts = String(email || '').split('@');
+  if (parts.length !== 2) return false;
+  let [local, domain] = parts;
+  if (!local || !domain) return false;
+  let labels = domain.split('.');
+  if (labels.length < 2) return false;
+  if (!/^[a-z0-9._%+-]+$/i.test(local)) return false;
+  if (!/^[a-z]{2,}$/i.test(labels[labels.length - 1])) return false;
+  return labels.every(label => /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label));
 }
 
 function sanitizeLoginName(name) {
@@ -46,7 +54,7 @@ function loginEmail(name) {
 }
 
 function setLoginError(msg = '') {
-  $('err').textContent = msg;
+  $('loginError').textContent = msg;
 }
 
 function showLogin(msg = '') {
@@ -122,7 +130,7 @@ function init() {
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
   $('saveSet').onclick = saveSettings;
-  $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
+  $('msg').onkeydown = e => { if (e.key === 'Enter') sendMsg(); };
 }
 
 // TAB NAVIGATION
@@ -479,8 +487,8 @@ function fmt(d) {
 // START APP - ACCESSO CON LOGIN
 window.addEventListener('load', () => {
   $('loginBtn').onclick = login;
-  $('loginName').onkeypress = e => { if (e.key === 'Enter') login(); };
-  $('loginPassword').onkeypress = e => { if (e.key === 'Enter') login(); };
+  $('loginName').onkeydown = e => { if (e.key === 'Enter') login(); };
+  $('loginPassword').onkeydown = e => { if (e.key === 'Enter') login(); };
   showLogin();
 
   onAuthStateChanged(auth, async user => {
