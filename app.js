@@ -855,12 +855,16 @@ function validateEmployeePayload({ name, surname, email, phone, restaurantRole, 
 }
 
 async function checkEmailUniqueness(email, ignoreId = '') {
+  const emailExistsInLoadedEmployees = employeesData.some(emp => emp.id !== ignoreId && normalizeEmail(emp.email) === email);
+  const emailExistsInLoadedUsers = usersData.some(user => user.id !== ignoreId && normalizeEmail(user.email) === email);
+  if (emailExistsInLoadedEmployees || emailExistsInLoadedUsers) return false;
+
   const [employeeSnap, userSnap] = await Promise.all([
     getDocs(query(employeeCollection(), where('email', '==', email))),
     getDocs(query(usersCollection(), where('email', '==', email)))
   ]);
-  const emailExistsInEmployees = employeeSnap.docs.some(d => d.id !== ignoreId && normalizeEmail(d.data()?.email) === email);
-  const emailExistsInUsers = userSnap.docs.some(d => d.id !== ignoreId && normalizeEmail(d.data()?.email) === email);
+  const emailExistsInEmployees = employeeSnap.docs.some(d => d.id !== ignoreId);
+  const emailExistsInUsers = userSnap.docs.some(d => d.id !== ignoreId);
   return !emailExistsInEmployees && !emailExistsInUsers;
 }
 
