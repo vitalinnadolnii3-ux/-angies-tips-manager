@@ -856,8 +856,8 @@ function validateEmployeePayload({ name, surname, email, phone, restaurantRole, 
 
 async function checkEmailUniqueness(email, ignoreId = '') {
   const [employeeSnap, userSnap] = await Promise.all([
-    getDocs(employeeCollection()),
-    getDocs(usersCollection())
+    getDocs(query(employeeCollection(), where('email', '==', email))),
+    getDocs(query(usersCollection(), where('email', '==', email)))
   ]);
   const emailExistsInEmployees = employeeSnap.docs.some(d => d.id !== ignoreId && normalizeEmail(d.data()?.email) === email);
   const emailExistsInUsers = userSnap.docs.some(d => d.id !== ignoreId && normalizeEmail(d.data()?.email) === email);
@@ -988,7 +988,7 @@ async function createEmployee() {
     await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
     await loadEmployees();
-    alert(`Dipendente creato con successo. Accesso iniziale: ${data.normalizedEmail} / ${DEFAULT_EMPLOYEE_PASSWORD}`);
+    alert('Dipendente creato con successo. Credenziali iniziali impostate.');
   } catch (e) {
     console.error('Errore salvataggio profilo dipendente:', e);
     alert('Errore salvataggio profilo: ' + e.message);
@@ -1130,7 +1130,7 @@ async function resetEmployeePassword(id) {
       password: DEFAULT_EMPLOYEE_PASSWORD
     });
     await writeLog(`employee_password_reset:${employee.id}:default`);
-    alert(`Password reimpostata con successo a ${DEFAULT_EMPLOYEE_PASSWORD}.`);
+    alert('Password reimpostata con successo.');
     return;
   } catch (e) {
     console.warn('Reset password diretto non disponibile, provo email reset Firebase.', e);
