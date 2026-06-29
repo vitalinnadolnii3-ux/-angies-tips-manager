@@ -40,6 +40,7 @@ const isAdmin = () => currentUserRole.toLowerCase() === 'admin';
 const isManager = () => currentUserRole.toLowerCase() === 'manager';
 const isResponsible = () => currentUserRole.toLowerCase() === 'responsible';
 const isWaiter = () => currentUserRole.toLowerCase() === 'waiter';
+const canViewGlobalTipsData = () => isAdmin() || isManager() || isResponsible();
 const canManageShifts = () => isAdmin() || isManager() || isResponsible();
 const canManageUsers = () => isAdmin();
 const canViewAllData = () => isAdmin() || isManager();
@@ -380,7 +381,11 @@ async function load() {
       state.employees = d.employees || NAMES;
       state.kitchenPercent = d.kitchenPercent || 20;
     }
-    const h = await getDocs(collection(db, 'restaurants', 'angies', 'days'));
+    const daysRef = collection(db, 'restaurants', 'angies', 'days');
+    const daysQuery = canViewGlobalTipsData()
+      ? daysRef
+      : query(daysRef, where('uid', '==', currentUserUid || '__no-user__'));
+    const h = await getDocs(daysQuery);
     state.history = [];
     h.forEach(d => {
       state.history.push({ date: d.id, ...d.data() });
@@ -1117,6 +1122,7 @@ function data() {
   let cucinaCard = card * p;
   return {
     date: $('date').value,
+    uid: currentUserUid || '',
     cash: cash,
     card: card,
     total: cash + card,
@@ -1127,6 +1133,14 @@ function data() {
     cucinaCash: cucinaCash,
     cucinaCard: cucinaCard
   };
+}
+
+function updateDashboardLabels() {
+  const waiterView = isWaiter();
+  $('dTotalLabel').textContent = waiterView ? 'Le mie mance' : 'Totale mance';
+  $('dCashLabel').textContent = waiterView ? 'Il mio cash' : 'Totale Cash';
+  $('dCardLabel').textContent = waiterView ? 'La mia carta' : 'Totale Carta';
+  $('dDaysLabel').textContent = waiterView ? 'I miei giorni registrati' : 'Giorni registrati';
 }
 
 // RENDER ALL
@@ -1283,6 +1297,7 @@ function sum(rows, k) {
 
 // DASHBOARD
 function dash() {
+  updateDashboardLabels();
   let r = state.history;
   $('dTotal').textContent = euro(sum(r, 'total'));
   $('dCash').textContent = euro(sum(r, 'cash'));

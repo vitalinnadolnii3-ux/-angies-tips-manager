@@ -112,8 +112,12 @@ service cloud.firestore {
     }
 
     match /restaurants/angies/days/{dayId} {
-      // Admin/Manager can read tips and history; admin can write
-      allow read: if isManagerOrAdmin();
+      // Admin/Manager/Responsible can read all tips and history.
+      // Waiter can read only own entries (must query with uid == request.auth.uid).
+      allow read: if isManagerOrAdmin() ||
+        isResponsible() ||
+        isUserManagerAdminOrResponsible() ||
+        (signedIn() && employeeEnabled() && resource.data.uid == request.auth.uid);
       allow write: if isAdmin();
     }
 
