@@ -497,9 +497,6 @@ async function doLogin() {
     } else {
       msg = 'Errore login: ' + getErrorDetails(e);
     }
-    if (msg && !/Errore login:/.test(msg)) {
-      msg += ` Dettaglio: ${getErrorDetails(e)}`;
-    }
     setStatus('loginStatus', msg, 'error');
   }
 }
@@ -1163,7 +1160,7 @@ async function loadCurrentUserProfile(user) {
           active: enabled
         });
       } catch (rtErr) {
-        console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', rtErr.message);
+        console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', getErrorDetails(rtErr));
       }
       try {
         await setDoc(userDoc(user.uid), {
@@ -1178,7 +1175,7 @@ async function loadCurrentUserProfile(user) {
           updatedAt: serverTimestamp()
         }, { merge: true });
       } catch (fsErr) {
-        console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', fsErr.message);
+        console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', getErrorDetails(fsErr));
       }
       console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
       return true;
@@ -2480,7 +2477,7 @@ window.addEventListener('load', async () => {
         try {
           await signOut(auth);
         } catch (signOutError) {
-          console.warn('[Auth] Sign-out dopo errore login non riuscito:', signOutError.message);
+          console.warn('[Auth] Sign-out dopo errore login non riuscito:', getErrorDetails(signOutError));
         }
       }
     }
