@@ -95,7 +95,7 @@ service cloud.firestore {
     }
 
     match /restaurants/angies/employees/{employeeId} {
-      allow read: if signedIn() && employeeEnabled() && (isManagerOrAdmin() || isResponsible() || request.auth.uid == employeeId);
+      allow read: if signedIn() && employeeEnabled();
       allow create, update: if isAdmin() &&
         request.resource.data.role is string &&
         request.resource.data.role in ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
@@ -111,8 +111,7 @@ service cloud.firestore {
         request.resource.data.weekStart is string &&
         request.resource.data.shiftType is string;
       allow update: if canManageShifts();
-      // Only admin can delete shifts
-      allow delete: if isAdmin();
+      allow delete: if canManageShifts();
     }
 
     match /restaurants/angies/days/{dayId} {

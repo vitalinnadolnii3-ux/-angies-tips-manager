@@ -237,7 +237,7 @@ function classifyShift(shift) {
 }
 
 function getShiftEmployees() {
-  if (canManageShifts()) {
+  if (Array.isArray(employeesData) && employeesData.length > 0) {
     return employeesData
       .filter(emp => emp.enabled !== false)
       .map(emp => ({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id }))
@@ -399,12 +399,13 @@ async function load() {
 }
 
 async function loadEmployees() {
-  if (!canManageShifts()) {
+  if (!currentUserUid) {
     employeesData = [];
     renderEmployeesTable();
     return;
   }
   try {
+    // Serve la lista completa dipendenti anche ai waiter per mostrare la tabella turni completa.
     const snap = await getDocs(employeeCollection());
     employeesData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
@@ -791,7 +792,7 @@ function renderShiftTable(tableId, allowEdit) {
   });
   html += '<tr class="shift-total-row"><td class="shift-employee-cell">Totali</td>';
   totals.forEach(dayTotal => {
-    html += `<td>M: ${dayTotal.M} | P: ${dayTotal.P} | S: ${dayTotal.S}</td>`;
+    html += `<td class="shift-total-cell"><div class="shift-total-line">M: ${dayTotal.M}</div><div class="shift-total-line">P: ${dayTotal.P}</div><div class="shift-total-line">S: ${dayTotal.S}</div></td>`;
   });
   html += '</tr>';
   table.innerHTML = html;
@@ -886,8 +887,7 @@ function openShiftEditor(uid = '', date = '') {
   $('shiftNotes').value = existing?.notes || '';
   $('shiftRestDay').checked = Boolean(existing?.isRestDay) || $('shiftType').value === 'rest';
   syncShiftEditorRestState();
-  // Delete button: only visible to admin (not manager)
-  $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId || !isAdmin());
+  $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId || !canManageShifts());
   $('shiftEditor').classList.remove('hidden');
 }
 
@@ -945,9 +945,9 @@ async function saveShift() {
 }
 
 async function deleteShift() {
-  if (!isAdmin()) {
-    console.warn('Solo admin possono eliminare i turni.');
-    return alert('Solo gli admin possono eliminare i turni. Questa azione richiede permessi di amministratore.');
+  if (!canManageShifts()) {
+    console.warn('Solo Admin/Manager/Responsible possono eliminare i turni.');
+    return alert('Questa azione richiede permessi Admin/Manager/Responsible.');
   }
   if (!editingShiftId) return;
   if (!confirm('Eliminare questo turno?')) return;
@@ -1065,9 +1065,6 @@ function tab(id, b) {
     console.warn('Accesso alle impostazioni riservato agli admin.');
     alert('Non hai i permessi per accedere a questa sezione.');
     return;
-  }
-  if (id === 'turni' && !canManageShifts()) {
-    clearShiftEditor();
   }
   if (id === 'myShifts' && canManageShifts()) {
     alert('Questa vista è disponibile per i dipendenti.');
