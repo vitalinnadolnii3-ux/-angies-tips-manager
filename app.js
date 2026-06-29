@@ -183,46 +183,56 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
   const email = normalizeEmail(user.email);
   const phone = String(profile.phone || '').trim();
   const restaurantRole = normalizeRestaurantRole(profile.restaurantRole || '');
-  const syncResults = await Promise.allSettled([
-    rtdbSet(rtdbUser(user.uid), {
-      email,
-      name,
-      role: 'admin',
-      active: true
-    }),
-    setDoc(userDoc(user.uid), {
-      name,
-      surname,
-      email,
-      phone,
-      restaurantRole,
-      appRole: 'Admin',
-      role: 'admin',
-      active: true,
-      updatedAt: serverTimestamp()
-    }, { merge: true }),
-    setDoc(employeeDoc(user.uid), {
-      name,
-      surname,
-      email,
-      phone,
-      restaurantRole,
-      appRole: 'Admin',
-      role: 'Admin',
-      enabled: true,
-      active: true,
-      updatedAt: serverTimestamp()
-    }, { merge: true })
-  ]);
+  const syncTasks = [
+    {
+      label: 'RTDB users',
+      promise: rtdbSet(rtdbUser(user.uid), {
+        email,
+        name,
+        role: 'admin',
+        active: true
+      })
+    },
+    {
+      label: 'Firestore /users',
+      promise: setDoc(userDoc(user.uid), {
+        name,
+        surname,
+        email,
+        phone,
+        restaurantRole,
+        appRole: 'Admin',
+        role: 'admin',
+        active: true,
+        updatedAt: serverTimestamp()
+      }, { merge: true })
+    },
+    {
+      label: 'Firestore /employees',
+      promise: setDoc(employeeDoc(user.uid), {
+        name,
+        surname,
+        email,
+        phone,
+        restaurantRole,
+        appRole: 'Admin',
+        role: 'Admin',
+        enabled: true,
+        active: true,
+        updatedAt: serverTimestamp()
+      }, { merge: true })
+    }
+  ];
+  const syncResults = await Promise.allSettled(syncTasks.map(task => task.promise));
   const syncFailures = syncResults
     .map((result, index) => {
       if (result.status !== 'rejected') return '';
-      const label = ['RTDB users', 'Firestore /users', 'Firestore /employees'][index];
-      return `${label}: ${getErrorDetails(result.reason)}`;
+      return `${syncTasks[index].label}: ${getErrorDetails(result.reason)}`;
     })
     .filter(Boolean);
   if (syncFailures.length) {
     console.warn('[Profilo] Sincronizzazione profilo admin incompleta:', syncFailures);
+    setStatus('loginStatus', 'Profilo admin sincronizzato solo in parte. Completa il deploy delle regole Firebase e ripeti il login se mancano dati o permessi.', 'info');
   }
   return { name, surname, email, phone, restaurantRole };
 }
