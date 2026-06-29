@@ -29,7 +29,6 @@ const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
-const NO_USER_PLACEHOLDER_UID = '__no-user__';
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -383,9 +382,11 @@ async function load() {
       state.kitchenPercent = d.kitchenPercent || 20;
     }
     const daysRef = collection(db, 'restaurants', 'angies', 'days');
-    const daysQuery = canViewGlobalTipsData()
-      ? daysRef
-      : query(daysRef, where('uid', '==', currentUserUid || NO_USER_PLACEHOLDER_UID));
+    if (!canViewGlobalTipsData() && !currentUserUid) {
+      state.history = [];
+      return;
+    }
+    const daysQuery = canViewGlobalTipsData() ? daysRef : query(daysRef, where('uid', '==', currentUserUid));
     const h = await getDocs(daysQuery);
     state.history = [];
     h.forEach(d => {
@@ -1123,7 +1124,7 @@ function data() {
   let cucinaCard = card * p;
   return {
     date: $('date').value,
-    uid: currentUserUid || '',
+    uid: currentUserUid,
     cash: cash,
     card: card,
     total: cash + card,
@@ -1214,6 +1215,7 @@ function calc() {
 
 // SAVE DAY
 async function saveDay() {
+  if (!currentUserUid) return alert('Sessione non valida. Effettua di nuovo il login.');
   let d = data();
   if (!d.date) return alert('Inserisci la data.');
   if (d.total <= 0) return alert('Inserisci Cash o Carta.');
