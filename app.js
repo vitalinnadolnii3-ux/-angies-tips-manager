@@ -237,7 +237,7 @@ function classifyShift(shift) {
 }
 
 function getShiftEmployees() {
-  if (employeesData.length) {
+  if (Array.isArray(employeesData) && employeesData.length > 0) {
     return employeesData
       .filter(emp => emp.enabled !== false)
       .map(emp => ({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id }))
@@ -405,6 +405,7 @@ async function loadEmployees() {
     return;
   }
   try {
+    // Serve la lista completa dipendenti anche ai waiter per mostrare la tabella turni completa.
     const snap = await getDocs(employeeCollection());
     employeesData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
