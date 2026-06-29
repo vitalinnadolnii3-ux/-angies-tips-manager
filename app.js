@@ -458,7 +458,7 @@ function renderEmployeesTable() {
   const table = $('employeeList');
   if (!table) return;
   if (!isAdmin()) {
-    table.innerHTML = '<tr><td>Accesso consentito solo agli admin.</td></tr>';
+    table.innerHTML = '<tr><td colspan="7">Accesso consentito solo agli admin.</td></tr>';
     return;
   }
   let html = '<tr><th>Nome</th><th>Email</th><th>Telefono</th><th>Posizione</th><th>Ruolo App</th><th>Stato</th><th>Azioni</th></tr>';
