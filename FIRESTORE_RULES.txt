@@ -71,6 +71,10 @@ service cloud.firestore {
       return isUserAdmin() || isUserManager() || isUserResponsible();
     }
 
+    function canReadAllDays() {
+      return isManagerOrAdmin() || isResponsible() || isUserManagerAdminOrResponsible();
+    }
+
     function isShiftOwner() {
       return resource.data.uid == request.auth.uid;
     }
@@ -114,10 +118,11 @@ service cloud.firestore {
     match /restaurants/angies/days/{dayId} {
       // Admin/Manager/Responsible can read all tips and history.
       // Waiter can read only own entries (must query with uid == request.auth.uid).
-      allow read: if isManagerOrAdmin() ||
-        isResponsible() ||
-        isUserManagerAdminOrResponsible() ||
-        (signedIn() && employeeEnabled() && resource.data.uid == request.auth.uid);
+      allow read: if canReadAllDays() ||
+        (signedIn() &&
+         employeeEnabled() &&
+         resource.data.keys().hasAll(['uid']) &&
+         resource.data.uid == request.auth.uid);
       allow write: if isAdmin();
     }
 

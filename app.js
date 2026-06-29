@@ -29,6 +29,7 @@ const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
+const NO_USER_PLACEHOLDER_UID = '__no-user__';
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -384,7 +385,7 @@ async function load() {
     const daysRef = collection(db, 'restaurants', 'angies', 'days');
     const daysQuery = canViewGlobalTipsData()
       ? daysRef
-      : query(daysRef, where('uid', '==', currentUserUid || '__no-user__'));
+      : query(daysRef, where('uid', '==', currentUserUid || NO_USER_PLACEHOLDER_UID));
     const h = await getDocs(daysQuery);
     state.history = [];
     h.forEach(d => {
