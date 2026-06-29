@@ -39,6 +39,9 @@ const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
 const MINUTES_PER_DAY = 24 * 60;
+const PROFILE_LOAD_TIMEOUT_MS = 15000;
+const PRIMARY_LOAD_TIMEOUT_MS = 15000;
+const SECONDARY_LOAD_TIMEOUT_MS = 12000;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -100,6 +103,24 @@ function setShiftStatus(message = '', type = 'info') {
 
 function setAttendanceStatus(message = '', type = 'info') {
   setStatus('attendanceStatus', message, type);
+}
+
+function withTimeout(promise, timeoutMs = 15000, label = 'Operazione') {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
+    const timer = setTimeout(() => {
+      finish(reject, new Error(`${label} non completata entro ${Math.round(timeoutMs / 1000)}s.`));
+    }, timeoutMs);
+    Promise.resolve(promise)
+      .then(value => finish(resolve, value))
+      .catch(error => finish(reject, error));
+  });
 }
 
 function normalizeName(s) {
@@ -2395,7 +2416,7 @@ window.addEventListener('load', async () => {
     try {
       ensureFirebaseServicesReady();
       if (user) {
-        const loadedProfile = await loadCurrentUserProfile(user);
+        const loadedProfile = await withTimeout(loadCurrentUserProfile(user), PROFILE_LOAD_TIMEOUT_MS, 'Caricamento profilo');
         if (!loadedProfile) {
           hasLoadedSessionData = false;
           localStorage.removeItem(SESSION_KEY);
@@ -2427,21 +2448,48 @@ window.addEventListener('load', async () => {
         $('who').textContent = `${currentUser} (${currentUserRole})`;
         $('loginPass').value = '';
         todayShiftPopupShown = false;
-        if (!hasLoadedSessionData) {
-          await load();
-          hasLoadedSessionData = true;
-        }
-        await loadEmployees();
         syncEmployeeTabVisibility();
         syncShiftTabVisibility();
         syncSettingsTabVisibility();
         populateShiftEmployeeOptions();
         attachShiftListeners();
-        await loadAttendanceData();
         render();
         showApp();
         chatListen();
         writeLog('login');
+
+        const startupTasks = [];
+        if (!hasLoadedSessionData) {
+          startupTasks.push(
+            {
+              label: 'Caricamento dati principali',
+              promise: withTimeout(load(), PRIMARY_LOAD_TIMEOUT_MS, 'Caricamento dati principali')
+                .then(() => { hasLoadedSessionData = true; })
+            }
+          );
+        }
+        startupTasks.push({
+          label: 'Caricamento dipendenti',
+          promise: withTimeout(loadEmployees(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento dipendenti')
+        });
+        startupTasks.push({
+          label: 'Caricamento entrata e uscita',
+          promise: withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
+        });
+        const startupResults = await Promise.allSettled(startupTasks.map(task => task.promise));
+        const startupErrors = startupResults
+          .map((result, index) => {
+            if (result.status !== 'rejected') return '';
+            return `${startupTasks[index].label}: ${result.reason?.message || 'Errore non dettagliato'}`;
+          })
+          .filter(Boolean);
+        if (startupErrors.length) {
+          console.warn('[Auth] Alcuni caricamenti post-login non sono riusciti:', startupErrors, startupResults);
+          setStatus('loginStatus', `Accesso completato con avvisi: ${startupErrors.join(' | ')}`, 'error');
+        } else {
+          setStatus('loginStatus', '', 'info');
+        }
+        render();
       } else {
         hasLoadedSessionData = false;
         localStorage.removeItem(SESSION_KEY);
