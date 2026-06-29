@@ -39,3 +39,5 @@ https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
 Nota: `firestore.indexes.json` contiene l'indice composito necessario per i turni dei dipendenti (`uid` ASC, `date` ASC).
 Prima di bloccare Realtime Database con le regole versionate, assicurati che `users/{uid}` contenga almeno i profili dei membri che devono accedere a turni/attendance (l'app li mantiene sincronizzati durante login e aggiornamenti admin).
 Dopo ogni aggiornamento di regole o indici esegui `firebase deploy --only firestore,database` prima di usare la gestione turni o l'area entrata/uscita.
+
+Bootstrap admin: se cambi l'email admin preconfigurata, cerca l'indirizzo corrente e aggiornalo negli stessi tre punti `app.js`, `FIRESTORE_RULES.txt` e `database.rules.json`, poi ridistribuisci l'app e le regole Firebase.
