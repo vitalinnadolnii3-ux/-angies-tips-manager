@@ -5,7 +5,7 @@
     "users": {
       "$uid": {
         ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
-        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        ".write": "auth != null && ((!data.exists() && auth.uid === $uid) || root.child('users').child(auth.uid).child('role').val() === 'admin')",
         ".validate": "newData.val() == null || newData.hasChildren(['email','name','role','active'])",
         "email": {
           ".validate": "newData.isString()"
