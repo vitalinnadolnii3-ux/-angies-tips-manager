@@ -1063,7 +1063,12 @@ async function toggleUserActive(uid) {
 }
 
 async function loadCurrentUserProfile(user) {
-  ensureFirebaseServicesReady();
+  try {
+    ensureFirebaseServicesReady();
+  } catch (e) {
+    console.error('[Profilo] Servizi Firebase non pronti:', e);
+    throw new Error('Servizi Firebase non inizializzati: ' + getErrorDetails(e));
+  }
   currentUser = user.email || '';
   currentUserUid = user.uid || '';
   currentUserName = deriveNameFromEmail(user.email);
@@ -1152,11 +1157,13 @@ async function loadCurrentUserProfile(user) {
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      const resolvedRole = String(currentUserRole || 'waiter').toLowerCase();
+      const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
       try {
         await writeUserToRTDB(user.uid, {
           name: currentUserName,
           email: currentUser,
-          role: String(currentUserRole || '').toLowerCase(),
+          role: resolvedRole,
           active: enabled
         });
       } catch (rtErr) {
@@ -1169,8 +1176,8 @@ async function loadCurrentUserProfile(user) {
           email: currentUser,
           phone: profile.phone || '',
           restaurantRole: profile.restaurantRole || '',
-          appRole: normalizeAppRole(profile.appRole || profile.role) || '',
-          role: String(currentUserRole || 'waiter').toLowerCase(),
+          appRole: resolvedAppRole,
+          role: resolvedRole,
           active: enabled,
           updatedAt: serverTimestamp()
         }, { merge: true });
