@@ -2,12 +2,14 @@ import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
-import { firebaseConfig, getAuth } from "./firebase-config.js?v=12";
+import { ref as rtdbRef, get as rtdbGet, set as rtdbSet, update as rtdbUpdate, remove as rtdbRemove } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+import { firebaseConfig, getAuth, getDatabase } from "./firebase-config.js?v=13";
 
 const fbApp = initializeApp(firebaseConfig);
 const db = getFirestore(fbApp);
 const auth = getAuth(fbApp);
 const functions = getFunctions(fbApp);
+const rtdb = getDatabase(fbApp);
 
 const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
@@ -147,6 +149,40 @@ function shiftCollection() {
 
 function shiftDoc(id) {
   return doc(db, 'restaurants', 'angies', 'shifts', id);
+}
+
+// --- Realtime Database helpers for user role management ---
+
+function rtdbUsers() {
+  return rtdbRef(rtdb, 'users');
+}
+
+function rtdbUser(uid) {
+  return rtdbRef(rtdb, `users/${uid}`);
+}
+
+async function writeUserToRTDB(uid, data) {
+  const active = data.active !== false && data.enabled !== false;
+  const role = String(data.role || '').toLowerCase() || 'waiter';
+  const payload = {
+    email: String(data.email || ''),
+    name: normalizeName(data.name || ''),
+    role,
+    active
+  };
+  try {
+    await rtdbSet(rtdbUser(uid), payload);
+  } catch (e) {
+    console.warn('Avviso: scrittura RTDB users non riuscita per uid:', uid, e.message);
+  }
+}
+
+async function deleteUserFromRTDB(uid) {
+  try {
+    await rtdbRemove(rtdbUser(uid));
+  } catch (e) {
+    console.warn('Avviso: cancellazione RTDB users non riuscita per uid:', uid, e.message);
+  }
 }
 
 function parseISODate(dateStr) {
@@ -451,6 +487,17 @@ async function loadUsersForAdmin() {
     return;
   }
   try {
+    // Prefer Realtime Database as primary RBAC source
+    const rtdbSnap = await rtdbGet(rtdbUsers());
+    if (rtdbSnap.exists()) {
+      const rtdbVal = rtdbSnap.val();
+      usersData = Object.entries(rtdbVal)
+        .map(([id, data]) => ({ id, ...data }))
+        .sort((a, b) => normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' }));
+      renderUsersTable();
+      return;
+    }
+    // Fall back to Firestore /users/ collection
     const snap = await getDocs(usersCollection());
     usersData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' }));
@@ -603,6 +650,14 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     // Non-fatal: /users/ sync may fail if caller lacks permission
     console.warn('Avviso: sincronizzazione /users/ non riuscita:', e.message);
   }
+
+  // Sync to Realtime Database for RBAC role resolution at login
+  await writeUserToRTDB(uid, {
+    name: data.name,
+    email: data.email,
+    role: legacyRole.toLowerCase(),
+    active
+  });
 }
 
 async function createEmployee() {
@@ -784,6 +839,7 @@ async function deleteEmployeeFromModal() {
     } catch (e) {
       console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
     }
+    await deleteUserFromRTDB(employee.id);
     await writeLog(`employee_delete:${employee.id}`);
     closeEmployeeModal();
     await loadEmployees();
@@ -843,6 +899,7 @@ async function removeEmployee(id) {
     } catch (e) {
       console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
     }
+    await deleteUserFromRTDB(employee.id);
     await writeLog(`employee_delete:${employee.id}`);
     if (editingEmployeeId === employee.id) closeEmployeeModal();
     await loadEmployees();
@@ -861,6 +918,12 @@ async function updateUserRole(uid, role) {
     const legacyRole = appRoleToLegacyRole(role);
     const appRoleSync = normalizeAppRole(role);
     await setDoc(employeeDoc(uid), { role: legacyRole, appRole: appRoleSync, updatedAt: serverTimestamp() }, { merge: true });
+    // Sync to Realtime Database
+    try {
+      await rtdbUpdate(rtdbUser(uid), { role });
+    } catch (e) {
+      console.warn('Avviso: aggiornamento RTDB ruolo non riuscito per uid:', uid, 'ruolo:', role, e.message);
+    }
     await writeLog(`user_role_update:${uid}:${role}`);
     await loadUsersForAdmin();
   } catch (e) {
@@ -878,6 +941,12 @@ async function toggleUserActive(uid) {
   try {
     await setDoc(userDoc(uid), { active: nextActive, updatedAt: serverTimestamp() }, { merge: true });
     await setDoc(employeeDoc(uid), { active: nextActive, enabled: nextActive, updatedAt: serverTimestamp() }, { merge: true });
+    // Sync to Realtime Database
+    try {
+      await rtdbUpdate(rtdbUser(uid), { active: nextActive });
+    } catch (e) {
+      console.warn('Avviso: aggiornamento RTDB stato non riuscito per uid:', uid, 'stato:', nextActive, e.message);
+    }
     await writeLog(`user_${nextActive ? 'enable' : 'disable'}:${uid}`);
     await loadUsersForAdmin();
     if (uid === currentUserUid && !nextActive) {
@@ -897,7 +966,22 @@ async function loadCurrentUserProfile(user) {
   currentUserRole = '';
 
   try {
-    // Check /users/ collection first (new RBAC system)
+    // 1. Check Realtime Database users/{uid} (primary RBAC source)
+    const rtdbSnap = await rtdbGet(rtdbUser(user.uid));
+    if (rtdbSnap.exists()) {
+      const profile = rtdbSnap.val();
+      const active = profile.active !== false;
+      if (!active) {
+        alert('Account disabilitato. Contatta un amministratore.');
+        await signOut(auth);
+        return false;
+      }
+      currentUserName = normalizeName(profile.name) || currentUserName;
+      currentUserRole = profile.role || 'waiter';
+      return true;
+    }
+
+    // 2. Fall back to Firestore /users/ collection
     const userSnap = await getDoc(userDoc(user.uid));
     if (userSnap.exists()) {
       const profile = userSnap.data();
@@ -908,34 +992,42 @@ async function loadCurrentUserProfile(user) {
         return false;
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
-      // /users/ collection stores roles as lowercase ('admin','manager','responsible','waiter','kitchen')
       currentUserRole = profile.role || 'waiter';
-    } else {
-      // Fallback to /employees/ collection for backwards compatibility
-      const profileSnap = await getDoc(employeeDoc(user.uid));
-      if (profileSnap.exists()) {
-        const profile = profileSnap.data();
-        const enabled = profile.enabled !== false;
-        if (!enabled) {
-          alert('Account disabilitato. Contatta un amministratore.');
-          await signOut(auth);
-          return false;
-        }
-        currentUserName = normalizeName(profile.name) || currentUserName;
-        currentUserRole = normalizeRole(profile.role) || 'Waiter';
-      } else {
-        currentUserRole = 'Waiter';
-        await upsertEmployeeProfile(user.uid, {
-          name: deriveNameFromEmail(user.email),
-          surname: '',
-          email: currentUser,
-          restaurantRole: '',
-          appRole: 'Waiter',
-          active: true
-        }, true);
-        await writeLog('employee_profile_bootstrap');
+      // Migrate to RTDB for future logins
+      try {
+        await writeUserToRTDB(user.uid, profile);
+      } catch (e) {
+        console.warn('Avviso: migrazione a RTDB non riuscita per uid:', user.uid, e.message);
       }
+      return true;
     }
+
+    // 3. Fall back to /employees/ collection
+    const profileSnap = await getDoc(employeeDoc(user.uid));
+    if (profileSnap.exists()) {
+      const profile = profileSnap.data();
+      const enabled = profile.enabled !== false;
+      if (!enabled) {
+        alert('Account disabilitato. Contatta un amministratore.');
+        await signOut(auth);
+        return false;
+      }
+      currentUserName = normalizeName(profile.name) || currentUserName;
+      currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      return true;
+    }
+
+    // 4. Bootstrap new user profile
+    currentUserRole = 'Waiter';
+    await upsertEmployeeProfile(user.uid, {
+      name: deriveNameFromEmail(user.email),
+      surname: '',
+      email: currentUser,
+      restaurantRole: '',
+      appRole: 'Waiter',
+      active: true
+    }, true);
+    await writeLog('employee_profile_bootstrap');
   } catch (e) {
     console.error('Errore caricamento profilo utente:', e);
     alert('Errore caricamento profilo utente: ' + e.message);
