@@ -58,6 +58,19 @@ const canManageUsers = () => isAdmin();
 const canViewAllData = () => isAdmin() || isManager();
 const canViewUserData = (targetUid) => isAdmin() || isManager() || targetUid === currentUserUid;
 
+function getErrorDetails(error, fallback = 'Errore sconosciuto') {
+  const code = String(error?.code || '').trim();
+  const message = String(error?.message || '').trim() || fallback;
+  return code ? `${message} (${code})` : message;
+}
+
+function ensureFirebaseServicesReady() {
+  if (!fbApp) throw new Error('Firebase App non inizializzata.');
+  if (!auth || auth.app !== fbApp) throw new Error('Firebase Auth non inizializzato correttamente.');
+  if (!db || db.app !== fbApp) throw new Error('Firestore non inizializzato correttamente.');
+  if (!rtdb || rtdb.app !== fbApp) throw new Error('Realtime Database non inizializzato correttamente.');
+}
+
 function getFriendlyFirestoreMessage(error, fallback = 'Si è verificato un errore.') {
   const code = String(error?.code || '').trim().toLowerCase();
   const message = String(error?.message || '').trim();
@@ -449,6 +462,15 @@ async function writeLog(action, username = currentUser) {
 }
 
 async function doLogin() {
+  try {
+    ensureFirebaseServicesReady();
+  } catch (e) {
+    const detail = getErrorDetails(e, 'Servizi Firebase non disponibili.');
+    console.error('[Login] Inizializzazione Firebase non valida:', e);
+    setStatus('loginStatus', detail, 'error');
+    return;
+  }
+
   const email = normalizeEmail($('loginEmail').value);
   const pwd = $('loginPass').value;
   if (!email) { setStatus('loginStatus', 'Inserisci l\'email.', 'error'); return; }
@@ -473,7 +495,10 @@ async function doLogin() {
     } else if (e.code === 'auth/invalid-email') {
       msg = 'Formato email non valido.';
     } else {
-      msg = 'Errore login: ' + e.message;
+      msg = 'Errore login: ' + getErrorDetails(e);
+    }
+    if (msg && !/Errore login:/.test(msg)) {
+      msg += ` Dettaglio: ${getErrorDetails(e)}`;
     }
     setStatus('loginStatus', msg, 'error');
   }
@@ -1041,6 +1066,7 @@ async function toggleUserActive(uid) {
 }
 
 async function loadCurrentUserProfile(user) {
+  ensureFirebaseServicesReady();
   currentUser = user.email || '';
   currentUserUid = user.uid || '';
   currentUserName = deriveNameFromEmail(user.email);
@@ -1129,6 +1155,31 @@ async function loadCurrentUserProfile(user) {
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      try {
+        await writeUserToRTDB(user.uid, {
+          name: currentUserName,
+          email: currentUser,
+          role: String(currentUserRole || '').toLowerCase(),
+          active: enabled
+        });
+      } catch (rtErr) {
+        console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', rtErr.message);
+      }
+      try {
+        await setDoc(userDoc(user.uid), {
+          name: currentUserName,
+          surname: profile.surname || '',
+          email: currentUser,
+          phone: profile.phone || '',
+          restaurantRole: profile.restaurantRole || '',
+          appRole: normalizeAppRole(profile.appRole || profile.role) || '',
+          role: String(currentUserRole || 'waiter').toLowerCase(),
+          active: enabled,
+          updatedAt: serverTimestamp()
+        }, { merge: true });
+      } catch (fsErr) {
+        console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', fsErr.message);
+      }
       console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
       return true;
     }
@@ -2337,26 +2388,80 @@ window.addEventListener('load', async () => {
   clearEmployeeForm();
   render();
   onAuthStateChanged(auth, async user => {
-    if (user) {
-      const loadedProfile = await loadCurrentUserProfile(user);
-      if (!loadedProfile) {
+    try {
+      ensureFirebaseServicesReady();
+      if (user) {
+        const loadedProfile = await loadCurrentUserProfile(user);
+        if (!loadedProfile) {
+          hasLoadedSessionData = false;
+          localStorage.removeItem(SESSION_KEY);
+          currentUser = '';
+          currentUserName = '';
+          currentUserUid = '';
+          currentUserRole = '';
+          employeesData = [];
+          shiftsData = [];
+          attendanceDate = today();
+          attendanceDayEntries = {};
+          attendanceWeekEntries = {};
+          attendanceShiftData = [];
+          if (shiftsUnsub) {
+            shiftsUnsub();
+            shiftsUnsub = null;
+          }
+          $('who').textContent = 'Online';
+          clearEmployeeForm();
+          clearShiftEditor();
+          syncEmployeeTabVisibility();
+          syncShiftTabVisibility();
+          syncSettingsTabVisibility();
+          renderShifts();
+          showLogin();
+          return;
+        }
+        localStorage.setItem(SESSION_KEY, currentUser);
+        $('who').textContent = `${currentUser} (${currentUserRole})`;
+        $('loginPass').value = '';
+        todayShiftPopupShown = false;
+        if (!hasLoadedSessionData) {
+          await load();
+          hasLoadedSessionData = true;
+        }
+        await loadEmployees();
+        syncEmployeeTabVisibility();
+        syncShiftTabVisibility();
+        syncSettingsTabVisibility();
+        populateShiftEmployeeOptions();
+        attachShiftListeners();
+        await loadAttendanceData();
+        render();
+        showApp();
+        chatListen();
+        writeLog('login');
+      } else {
         hasLoadedSessionData = false;
         localStorage.removeItem(SESSION_KEY);
         currentUser = '';
         currentUserName = '';
         currentUserUid = '';
         currentUserRole = '';
+        todayShiftPopupShown = false;
+        weekOffset = 0;
         employeesData = [];
         shiftsData = [];
         attendanceDate = today();
         attendanceDayEntries = {};
         attendanceWeekEntries = {};
         attendanceShiftData = [];
+        $('who').textContent = 'Online';
+        if (unsub) {
+          unsub();
+          unsub = null;
+        }
         if (shiftsUnsub) {
           shiftsUnsub();
           shiftsUnsub = null;
         }
-        $('who').textContent = 'Online';
         clearEmployeeForm();
         clearShiftEditor();
         syncEmployeeTabVisibility();
@@ -2364,58 +2469,20 @@ window.addEventListener('load', async () => {
         syncSettingsTabVisibility();
         renderShifts();
         showLogin();
-        return;
       }
-      localStorage.setItem(SESSION_KEY, currentUser);
-      $('who').textContent = `${currentUser} (${currentUserRole})`;
-      $('loginPass').value = '';
-      todayShiftPopupShown = false;
-      if (!hasLoadedSessionData) {
-        await load();
-        hasLoadedSessionData = true;
-      }
-      await loadEmployees();
-      syncEmployeeTabVisibility();
-      syncShiftTabVisibility();
-      syncSettingsTabVisibility();
-      populateShiftEmployeeOptions();
-      attachShiftListeners();
-      await loadAttendanceData();
-      render();
-      showApp();
-      chatListen();
-      writeLog('login');
-    } else {
-      hasLoadedSessionData = false;
-      localStorage.removeItem(SESSION_KEY);
-      currentUser = '';
-      currentUserName = '';
-      currentUserUid = '';
-      currentUserRole = '';
-      todayShiftPopupShown = false;
-      weekOffset = 0;
-      employeesData = [];
-      shiftsData = [];
-      attendanceDate = today();
-      attendanceDayEntries = {};
-      attendanceWeekEntries = {};
-      attendanceShiftData = [];
-      $('who').textContent = 'Online';
-      if (unsub) {
-        unsub();
-        unsub = null;
-      }
-      if (shiftsUnsub) {
-        shiftsUnsub();
-        shiftsUnsub = null;
-      }
-      clearEmployeeForm();
-      clearShiftEditor();
-      syncEmployeeTabVisibility();
-      syncShiftTabVisibility();
-      syncSettingsTabVisibility();
-      renderShifts();
+    } catch (e) {
+      console.error('[Auth] Errore durante completamento login:', e);
+      const detail = getErrorDetails(e, 'Errore imprevisto durante il login.');
+      setStatus('loginStatus', `Login fallito: ${detail}`, 'error');
       showLogin();
+      hasLoadedSessionData = false;
+      if (auth.currentUser) {
+        try {
+          await signOut(auth);
+        } catch (signOutError) {
+          console.warn('[Auth] Sign-out dopo errore login non riuscito:', signOutError.message);
+        }
+      }
     }
   });
 });
