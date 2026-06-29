@@ -855,6 +855,7 @@ function validateEmployeePayload({ name, surname, email, phone, restaurantRole, 
 }
 
 async function checkEmailUniqueness(email, ignoreId = '') {
+  email = normalizeEmail(email);
   const emailExistsInLoadedEmployees = employeesData.some(emp => emp.id !== ignoreId && normalizeEmail(emp.email) === email);
   const emailExistsInLoadedUsers = usersData.some(user => user.id !== ignoreId && normalizeEmail(user.email) === email);
   if (emailExistsInLoadedEmployees || emailExistsInLoadedUsers) return false;
@@ -992,7 +993,7 @@ async function createEmployee() {
     await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
     await loadEmployees();
-    alert('Dipendente creato con successo. Credenziali iniziali impostate.');
+    alert('Dipendente creato con successo. Invita il dipendente a cambiare la password dopo il primo accesso.');
   } catch (e) {
     console.error('Errore salvataggio profilo dipendente:', e);
     alert('Errore salvataggio profilo: ' + e.message);

@@ -20,7 +20,7 @@ In alternativa puoi pubblicare automaticamente regole e indici con Firebase CLI:
 - `firebase login`
 - `firebase deploy --only firestore,database`
 
-Poi crea solo l'utente admin bootstrap in Firebase > Authentication > Users > Add user. Gli altri dipendenti vengono creati automaticamente dalla tab Dipendenti con la password iniziale predefinita dell'app.
+Poi crea solo l'utente admin bootstrap in Firebase > Authentication > Users > Add user. Gli altri dipendenti vengono creati automaticamente dalla tab Dipendenti con la password iniziale predefinita dell'app. Per sicurezza, chiedi al dipendente di cambiarla subito dopo il primo accesso.
 
 Per la gestione dipendenti admin dall'app:
 - collezione Firestore: `restaurants/angies/employees/{uid}` con campi `email`, `name`, `role`, `enabled`, `createdAt`, `updatedAt`
