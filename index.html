@@ -34,6 +34,7 @@
       <button data-tab="history">📋 Storico</button>
       <button data-tab="stats">📈 Statistiche</button>
       <button id="turniTabBtn" class="hidden" data-tab="turni">📅 Turni</button>
+      <button id="attendanceTabBtn" data-tab="attendance">⏱️ Entrata e uscita</button>
       <button id="myShiftsTabBtn" data-tab="myShifts">👤 I miei turni</button>
       <button data-tab="chat">💬 Chat</button>
       <button id="employeeTabBtn" class="hidden" data-tab="employeeManagement">👥 Dipendenti</button>
@@ -213,6 +214,34 @@
             <button id="shiftDeleteBtn" class="danger hidden">Elimina turno</button>
             <button id="shiftCancelBtn" class="clear">Annulla</button>
           </div>
+        </div>
+      </section>
+
+      <section id="attendance" class="page">
+        <h2>Entrata e uscita</h2>
+        <div id="attendanceStatus" class="status-message hidden" role="status" aria-live="polite"></div>
+        <div class="actions shift-week-nav">
+          <button id="attendancePrevDayBtn" class="clear">Giorno precedente</button>
+          <button id="attendanceTodayBtn">Oggi</button>
+          <button id="attendanceNextDayBtn" class="clear">Giorno successivo</button>
+        </div>
+        <div class="panel grid">
+          <label>Data<input id="attendanceDate" type="date"></label>
+          <div class="attendance-week-info">
+            <span>Settimana di riferimento</span>
+            <strong id="attendanceWeekLabel">-</strong>
+          </div>
+        </div>
+        <div class="panel table-scroll">
+          <h3>Storico giornaliero</h3>
+          <table id="attendanceTable" class="attendance-table"></table>
+        </div>
+        <div id="attendanceActions" class="actions">
+          <button id="attendanceSaveBtn">Salva entrata e uscita</button>
+        </div>
+        <div class="panel table-scroll">
+          <h3>Storico settimanale</h3>
+          <table id="attendanceWeeklyTable" class="attendance-summary-table"></table>
         </div>
       </section>
 
