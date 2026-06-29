@@ -71,6 +71,17 @@ service cloud.firestore {
       return isUserAdmin() || isUserManager() || isUserResponsible();
     }
 
+    function isBootstrapAdminEmail() {
+      return signedIn() &&
+        request.auth.token.email is string &&
+        request.auth.token.email == 'vitalinnafolnii3@gmail.com';
+    }
+
+    function isLegacyBootstrapProfile() {
+      return resource.data.createdAt is timestamp &&
+        resource.data.createdAt < timestamp.date(2026, 6, 30);
+    }
+
     function canReadAllDays() {
       return isManagerOrAdmin() || isResponsible() || isUserManagerAdminOrResponsible();
     }
@@ -84,10 +95,31 @@ service cloud.firestore {
     // The first admin must be set up manually in /employees/ via Firebase Console.
     // Once /users/ docs exist, isUserAdmin() can be used for future rule updates.
     match /restaurants/angies/users/{uid} {
+      function canSelfBootstrapUserAdmin() {
+        return signedIn() &&
+          request.auth.uid == uid &&
+          request.auth.token.email is string &&
+          resource.data.email is string &&
+          request.auth.token.email == resource.data.email &&
+          request.resource.data.email == resource.data.email &&
+          request.resource.data.role == 'admin' &&
+          isLegacyBootstrapProfile();
+      }
+
+      function canCreateBootstrapUserAdmin() {
+        return signedIn() &&
+          request.auth.uid == uid &&
+          isBootstrapAdminEmail() &&
+          request.auth.token.email is string &&
+          request.resource.data.email == request.auth.token.email &&
+          request.resource.data.role == 'admin' &&
+          request.resource.data.active == true;
+      }
+
       // User can read their own document; admin or manager (via employees) can read all
       allow read: if signedIn() && (request.auth.uid == uid || isManagerOrAdmin());
       // Only admin can create/update user documents
-      allow create, update: if isAdmin() &&
+      allow create, update: if (isAdmin() || canSelfBootstrapUserAdmin() || canCreateBootstrapUserAdmin()) &&
         request.resource.data.role is string &&
         request.resource.data.role in ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
       // Only admin can delete user documents
@@ -95,8 +127,29 @@ service cloud.firestore {
     }
 
     match /restaurants/angies/employees/{employeeId} {
+      function canSelfBootstrapEmployeeAdmin() {
+        return signedIn() &&
+          request.auth.uid == employeeId &&
+          request.auth.token.email is string &&
+          resource.data.email is string &&
+          request.auth.token.email == resource.data.email &&
+          request.resource.data.email == resource.data.email &&
+          request.resource.data.role == 'Admin' &&
+          isLegacyBootstrapProfile();
+      }
+
+      function canCreateBootstrapEmployeeAdmin() {
+        return signedIn() &&
+          request.auth.uid == employeeId &&
+          isBootstrapAdminEmail() &&
+          request.auth.token.email is string &&
+          request.resource.data.email == request.auth.token.email &&
+          request.resource.data.role == 'Admin' &&
+          request.resource.data.enabled == true;
+      }
+
       allow read: if signedIn() && employeeEnabled();
-      allow create, update: if isAdmin() &&
+      allow create, update: if (isAdmin() || canSelfBootstrapEmployeeAdmin() || canCreateBootstrapEmployeeAdmin()) &&
         request.resource.data.role is string &&
         request.resource.data.role in ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
       allow delete: if isAdmin();

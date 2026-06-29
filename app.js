@@ -42,6 +42,9 @@ const MINUTES_PER_DAY = 24 * 60;
 const PROFILE_LOAD_TIMEOUT_MS = 15000;
 const PRIMARY_LOAD_TIMEOUT_MS = 15000;
 const SECONDARY_LOAD_TIMEOUT_MS = 12000;
+const ADMIN_BOOTSTRAP_EMAILS = new Set(['vitalinnafolnii3@gmail.com']);
+const ADMIN_BOOTSTRAP_CUTOFF_ISO = '2026-06-29T16:14:21.957Z';
+const ADMIN_BOOTSTRAP_CUTOFF_MS = Date.parse(ADMIN_BOOTSTRAP_CUTOFF_ISO);
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -170,6 +173,28 @@ function appRoleToLegacyRole(appRole) {
 function deriveNameFromEmail(email) {
   const localPart = normalizeName(String(email || '').split('@')[0]);
   return localPart || String(email || '').trim() || 'Unknown';
+}
+
+function getUserCreationTimeMs(user) {
+  const creationTime = String(user?.metadata?.creationTime || '').trim();
+  const creationTimeMs = Date.parse(creationTime);
+  return Number.isFinite(creationTimeMs) ? creationTimeMs : NaN;
+}
+
+function isBootstrapAdminEmail(user) {
+  return ADMIN_BOOTSTRAP_EMAILS.has(normalizeEmail(user?.email));
+}
+
+function shouldBootstrapAdmin(user) {
+  if (isBootstrapAdminEmail(user)) return true;
+  const createdAtMs = getUserCreationTimeMs(user);
+  return Number.isFinite(ADMIN_BOOTSTRAP_CUTOFF_MS) &&
+    Number.isFinite(createdAtMs) &&
+    createdAtMs <= ADMIN_BOOTSTRAP_CUTOFF_MS;
+}
+
+function getBootstrapRole(user) {
+  return shouldBootstrapAdmin(user) ? 'admin' : 'waiter';
 }
 
 function employeeCollection() {
@@ -784,6 +809,23 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
   });
 }
 
+async function promoteProfileToAdmin(user, profile = {}, isCreate = false) {
+  const active = profile.active !== false && profile.enabled !== false;
+  const email = normalizeEmail(profile.email || user?.email || '');
+  const name = normalizeName(profile.name) || deriveNameFromEmail(email);
+  await upsertEmployeeProfile(user.uid, {
+    name,
+    surname: profile.surname || '',
+    email,
+    phone: profile.phone || '',
+    restaurantRole: normalizeRestaurantRole(profile.restaurantRole || ''),
+    appRole: 'Admin',
+    role: 'Admin',
+    active
+  }, isCreate);
+  return 'admin';
+}
+
 async function createEmployee() {
   if (!isAdmin()) return alert('Solo admin');
   let data;
@@ -1095,7 +1137,6 @@ async function loadCurrentUserProfile(user) {
   currentUserName = deriveNameFromEmail(user.email);
   currentUserRole = '';
 
-  const ADMIN_EMAIL = 'vitalinnadolnii3@gmail.com';
   console.log('[Profilo] Caricamento profilo per:', currentUser, '| uid:', currentUserUid);
 
   // 1. Try Realtime Database users/{uid} (primary RBAC source)
@@ -1129,8 +1170,11 @@ async function loadCurrentUserProfile(user) {
       setStatus('loginStatus', 'Avviso: ruolo non configurato. Contatta un amministratore.', 'info');
       currentUserRole = 'waiter';
     }
-    console.log('[Profilo] Login da RTDB riuscito. Ruolo:', currentUserRole);
-    return true;
+    if (!shouldBootstrapAdmin(user) || currentUserRole.toLowerCase() === 'admin') {
+      console.log('[Profilo] Login da RTDB riuscito. Ruolo:', currentUserRole);
+      return true;
+    }
+    console.log('[Profilo] Profilo RTDB legacy trovato: verifico bootstrap admin su Firestore.');
   }
 
   // 2. Try Firestore /users/ collection
@@ -1148,9 +1192,20 @@ async function loadCurrentUserProfile(user) {
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = profile.role || 'waiter';
+      if (shouldBootstrapAdmin(user) && currentUserRole.toLowerCase() !== 'admin') {
+        currentUserRole = await promoteProfileToAdmin(user, profile);
+        console.log('[Profilo] Profilo /users promosso ad admin.');
+      }
+      const syncedUserProfile = {
+        ...profile,
+        name: currentUserName,
+        email: currentUser,
+        role: String(currentUserRole || 'waiter').toLowerCase(),
+        active
+      };
       // Try to migrate to RTDB for future logins
       try {
-        await writeUserToRTDB(user.uid, profile);
+        await writeUserToRTDB(user.uid, syncedUserProfile);
         console.log('[Profilo] Migrazione a RTDB riuscita.');
       } catch (e) {
         console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', e.message);
@@ -1178,6 +1233,10 @@ async function loadCurrentUserProfile(user) {
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      if (shouldBootstrapAdmin(user) && currentUserRole.toLowerCase() !== 'admin') {
+        currentUserRole = await promoteProfileToAdmin(user, profile);
+        console.log('[Profilo] Profilo /employees promosso ad admin.');
+      }
       const resolvedRole = String(currentUserRole || 'waiter').toLowerCase();
       const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
       try {
@@ -1212,10 +1271,9 @@ async function loadCurrentUserProfile(user) {
   } catch (e) {
     console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', e.code, e.message);
   }
-
   // 4. Auto-bootstrap: create profile for this user
-  const isAdminEmail = normalizeEmail(user.email) === ADMIN_EMAIL;
-  const autoRole = isAdminEmail ? 'admin' : 'waiter';
+  // 4. Auto-bootstrap: create profile for this user
+  const autoRole = getBootstrapRole(user);
   const autoName = deriveNameFromEmail(user.email);
   console.log('[Profilo] Creazione automatica profilo. Email:', currentUser, '| Ruolo assegnato:', autoRole);
 
@@ -1229,15 +1287,19 @@ async function loadCurrentUserProfile(user) {
 
   // Try Firestore write (non-blocking)
   try {
-    await upsertEmployeeProfile(user.uid, {
-      name: autoName,
-      surname: '',
-      email: currentUser,
-      restaurantRole: '',
-      appRole: autoRole.charAt(0).toUpperCase() + autoRole.slice(1),
-      role: autoRole,
-      active: true
-    }, true);
+    if (autoRole === 'admin') {
+      await promoteProfileToAdmin(user, { name: autoName, email: currentUser, active: true }, true);
+    } else {
+      await upsertEmployeeProfile(user.uid, {
+        name: autoName,
+        surname: '',
+        email: currentUser,
+        restaurantRole: '',
+        appRole: autoRole.charAt(0).toUpperCase() + autoRole.slice(1),
+        role: autoRole,
+        active: true
+      }, true);
+    }
     console.log('[Profilo] Profilo Firestore creato automaticamente con ruolo:', autoRole);
   } catch (e) {
     console.warn('[Profilo] Scrittura Firestore non riuscita (non bloccante):', e.code, e.message);
@@ -1245,7 +1307,7 @@ async function loadCurrentUserProfile(user) {
 
   currentUserRole = autoRole;
   setStatus('loginStatus',
-    isAdminEmail
+    autoRole === 'admin'
       ? 'Profilo admin creato automaticamente. Benvenuto!'
       : 'Profilo creato automaticamente come waiter. Contatta un admin per aggiornare il ruolo.',
     'info');
