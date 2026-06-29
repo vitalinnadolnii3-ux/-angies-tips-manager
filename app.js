@@ -2446,7 +2446,6 @@ window.addEventListener('load', async () => {
         attachShiftListeners();
         render();
         showApp();
-        setStatus('loginStatus', '', 'info');
         chatListen();
         writeLog('login');
 
@@ -2455,6 +2454,10 @@ window.addEventListener('load', async () => {
           startupTasks.push(
             withTimeout(load(), 15000, 'Caricamento dati principali')
               .then(() => { hasLoadedSessionData = true; })
+              .catch(err => {
+                hasLoadedSessionData = false;
+                throw err;
+              })
           );
         }
         startupTasks.push(withTimeout(loadEmployees(), 12000, 'Caricamento dipendenti'));
@@ -2465,7 +2468,7 @@ window.addEventListener('load', async () => {
           .map(result => result.reason?.message || 'Errore sconosciuto');
         if (startupErrors.length) {
           console.warn('[Auth] Alcuni caricamenti post-login non sono riusciti:', startupErrors);
-          setStatus('loginStatus', `Accesso completato con avvisi: ${startupErrors.join(' | ')}`, 'info');
+          setStatus('loginStatus', `Accesso completato con avvisi: ${startupErrors.join(' | ')}`, 'error');
         } else {
           setStatus('loginStatus', '', 'info');
         }
