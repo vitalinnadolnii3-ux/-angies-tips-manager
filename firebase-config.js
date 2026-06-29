@@ -1,4 +1,5 @@
 import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { getDatabase } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
 
 export const firebaseConfig = {
   apiKey: "AIzaSyA-3t0GGijEie7kZy3fdSOdmYJTGa6TNvU",
@@ -11,4 +12,4 @@ export const firebaseConfig = {
   measurementId: "G-LLJPZMSHQ8"
 };
 
-export { getAuth };
+export { getAuth, getDatabase };

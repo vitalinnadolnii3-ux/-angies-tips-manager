@@ -1,0 +1,23 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        ".validate": "newData.val() == null || (newData.hasChildren(['email','name','role','active']) && newData.child('email').isString() && newData.child('name').isString() && newData.child('role').isString() && newData.child('role').val().matches(/^(admin|manager|responsible|waiter)$/) && newData.child('active').isBoolean())"
+      }
+    },
+    "attendance": {
+      "$date": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+        "$uid": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+          ".validate": "newData.val() == null || (newData.hasChildren(['uid','employeeName','date','entryTime','exitTime','pauseMinutes','notes','workedMinutes','scheduledShiftText','delayMinutes','earlyLeaveMinutes','updatedAt','updatedBy']) && newData.child('uid').isString() && newData.child('uid').val() === $uid && newData.child('employeeName').isString() && newData.child('date').isString() && newData.child('date').val() === $date && newData.child('entryTime').isString() && newData.child('exitTime').isString() && newData.child('pauseMinutes').isNumber() && newData.child('notes').isString() && (newData.child('workedMinutes').isNumber() || newData.child('workedMinutes').val() == null) && newData.child('scheduledShiftText').isString() && newData.child('delayMinutes').isNumber() && newData.child('earlyLeaveMinutes').isNumber() && newData.child('updatedAt').isString() && newData.child('updatedBy').isString())"
+        }
+      }
+    }
+  }
+}
