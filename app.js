@@ -26,7 +26,7 @@ let editingShiftId = '';
 let todayShiftPopupShown = false;
 const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
-const RESTAURANT_ROLES = ['Direttore', 'Manager', 'Responsabile', 'Cameriere'];
+const RESTAURANT_ROLES = ['Direttore', 'Manager', 'Responsabile', 'Cameriere', 'Runner', 'Bartender'];
 const APP_ROLES = ['Admin', 'Manager', 'Responsabile', 'Waiter'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
@@ -307,9 +307,8 @@ function showApp() {
 function syncEmployeeTabVisibility() {
   const tabBtn = $('employeeTabBtn');
   if (!tabBtn) return;
-  const canView = isAdmin() || isManager();
-  tabBtn.classList.toggle('hidden', !canView);
-  if (!canView && $('employeeManagement').classList.contains('active')) {
+  tabBtn.classList.toggle('hidden', !isAdmin());
+  if (!isAdmin() && $('employeeManagement').classList.contains('active')) {
     tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
   // Show/hide the create form - only Admins can create employees
@@ -448,6 +447,7 @@ function clearEmployeeForm() {
   $('employeeName').value = '';
   $('employeeSurname').value = '';
   $('employeeEmail').value = '';
+  $('employeePhone').value = '';
   $('employeePassword').value = '';
   $('employeeRestaurantRole').value = '';
   $('employeeAppRole').value = '';
@@ -457,13 +457,13 @@ function clearEmployeeForm() {
 function renderEmployeesTable() {
   const table = $('employeeList');
   if (!table) return;
-  if (!isAdmin() && !isManager()) {
-    table.innerHTML = '<tr><td>Accesso consentito solo agli admin e manager.</td></tr>';
+  if (!isAdmin()) {
+    table.innerHTML = '<tr><td colspan="7">Accesso consentito solo agli admin.</td></tr>';
     return;
   }
-  let html = '<tr><th>Nome</th><th>Email</th><th>Posizione</th><th>Ruolo App</th><th>Stato</th><th>Azioni</th></tr>';
+  let html = '<tr><th>Nome</th><th>Email</th><th>Telefono</th><th>Posizione</th><th>Ruolo App</th><th>Stato</th><th>Azioni</th></tr>';
   if (!employeesData.length) {
-    html += '<tr><td colspan="6">Nessun dipendente registrato.</td></tr>';
+    html += '<tr><td colspan="7">Nessun dipendente registrato.</td></tr>';
     table.innerHTML = html;
     return;
   }
@@ -473,33 +473,36 @@ function renderEmployeesTable() {
     const statusText = active ? 'Attivo' : 'Disattivato';
     const restaurantRole = esc(emp.restaurantRole || '-');
     const appRole = esc(emp.appRole || normalizeAppRole(emp.role) || '-');
+    const phone = esc(emp.phone || '-');
     html += `<tr>
       <td>${esc((emp.name || '') + (emp.surname ? ' ' + emp.surname : '') || '-')}</td>
       <td>${esc(emp.email || '-')}</td>
+      <td>${phone}</td>
       <td>${restaurantRole}</td>
       <td>${appRole}</td>
       <td><span class="status-badge ${statusClass}">${statusText}</span></td>
       <td class="table-actions">
-        ${isAdmin() ? `<button data-employee-action="edit" data-employee-id="${esc(emp.id)}">Modifica</button>` : ''}
+        <button data-employee-action="edit" data-employee-id="${esc(emp.id)}">Modifica</button>
       </td>
     </tr>`;
   });
   table.innerHTML = html;
 }
 
-function validateEmployeePayload({ name, surname, email, restaurantRole, appRole, password, requirePassword = false, ignoreId = '' }) {
+function validateEmployeePayload({ name, surname, email, phone, restaurantRole, appRole, password, requirePassword = false, ignoreId = '' }) {
   const normalizedName = normalizeName(name);
   const normalizedSurname = normalizeName(surname || '');
   const normalizedEmail = normalizeEmail(email);
   const normalizedAppRole = normalizeAppRole(appRole);
   const normalizedRestaurantRole = normalizeRestaurantRole(restaurantRole || '');
+  const normalizedPhone = String(phone || '').trim();
   if (!normalizedName) throw new Error('Nome obbligatorio.');
   if (!normalizedEmail) throw new Error('Email obbligatoria.');
   if (!normalizedAppRole) throw new Error('Ruolo App obbligatorio.');
   const normalizedPassword = String(password || '');
   if (requirePassword && normalizedPassword.length < 8) throw new Error('Password minima di 8 caratteri.');
   if (!requirePassword && normalizedPassword && normalizedPassword.length < 8) throw new Error('Nuova password minima di 8 caratteri.');
-  return { normalizedName, normalizedSurname, normalizedEmail, normalizedAppRole, normalizedRestaurantRole, normalizedPassword };
+  return { normalizedName, normalizedSurname, normalizedEmail, normalizedPhone, normalizedAppRole, normalizedRestaurantRole, normalizedPassword };
 }
 
 async function checkEmailUniqueness(email, ignoreId = '') {
@@ -515,6 +518,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     name: data.name,
     surname: data.surname || '',
     email: data.email,
+    phone: data.phone || '',
     restaurantRole: data.restaurantRole || '',
     appRole: appRole || '',
     role: legacyRole,
@@ -530,6 +534,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     name: data.name,
     surname: data.surname || '',
     email: data.email,
+    phone: data.phone || '',
     restaurantRole: data.restaurantRole || '',
     appRole: appRole || '',
     role: legacyRole.toLowerCase(),
@@ -553,6 +558,7 @@ async function createEmployee() {
       name: $('employeeName').value,
       surname: $('employeeSurname').value,
       email: $('employeeEmail').value,
+      phone: $('employeePhone').value,
       restaurantRole: $('employeeRestaurantRole').value,
       appRole: $('employeeAppRole').value,
       password: $('employeePassword').value,
@@ -597,6 +603,7 @@ async function createEmployee() {
       name: data.normalizedName,
       surname: data.normalizedSurname,
       email: data.normalizedEmail,
+      phone: data.normalizedPhone,
       restaurantRole: data.normalizedRestaurantRole,
       appRole: data.normalizedAppRole,
       active: true
@@ -622,6 +629,7 @@ async function saveEmployeeModal() {
       name: $('modalEmpName').value,
       surname: $('modalEmpSurname').value,
       email: $('modalEmpEmail').value,
+      phone: $('modalEmpPhone').value,
       restaurantRole: $('modalEmpRestaurantRole').value,
       appRole: $('modalEmpAppRole').value,
       password: $('modalEmpPassword').value,
@@ -660,6 +668,7 @@ async function saveEmployeeModal() {
       name: data.normalizedName,
       surname: data.normalizedSurname,
       email: data.normalizedEmail,
+      phone: data.normalizedPhone,
       restaurantRole: data.normalizedRestaurantRole,
       appRole: data.normalizedAppRole,
       active: nextActive
@@ -688,6 +697,7 @@ function openEmployeeModal(id) {
   $('modalEmpName').value = employee.name || '';
   $('modalEmpSurname').value = employee.surname || '';
   $('modalEmpEmail').value = employee.email || '';
+  $('modalEmpPhone').value = employee.phone || '';
   $('modalEmpPassword').value = '';
   $('modalEmpRestaurantRole').value = normalizeRestaurantRole(employee.restaurantRole || '');
   $('modalEmpAppRole').value = normalizeAppRole(employee.appRole || employee.role || '');
@@ -742,6 +752,7 @@ async function toggleEmployeeEnabled(id) {
       name: employee.name || '',
       surname: employee.surname || '',
       email: normalizeEmail(employee.email),
+      phone: employee.phone || '',
       restaurantRole: employee.restaurantRole || '',
       appRole: employee.appRole || normalizeAppRole(employee.role || ''),
       active: nextActive
@@ -1154,8 +1165,8 @@ function init() {
 
 // TAB NAVIGATION
 function tab(id, b) {
-  if (id === 'employeeManagement' && !isAdmin() && !isManager()) {
-    console.warn('Solo admin e manager possono vedere i dipendenti.');
+  if (id === 'employeeManagement' && !isAdmin()) {
+    console.warn('Solo admin possono vedere i dipendenti.');
     alert('Non hai i permessi per accedere a questa sezione.');
     return;
   }
