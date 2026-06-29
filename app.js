@@ -173,7 +173,7 @@ async function writeUserToRTDB(uid, data) {
   try {
     await rtdbSet(rtdbUser(uid), payload);
   } catch (e) {
-    console.warn('Avviso: scrittura RTDB users non riuscita:', e.message);
+    console.warn('Avviso: scrittura RTDB users non riuscita per uid:', uid, e.message);
   }
 }
 
@@ -181,7 +181,7 @@ async function deleteUserFromRTDB(uid) {
   try {
     await rtdbRemove(rtdbUser(uid));
   } catch (e) {
-    console.warn('Avviso: cancellazione RTDB users non riuscita:', e.message);
+    console.warn('Avviso: cancellazione RTDB users non riuscita per uid:', uid, e.message);
   }
 }
 
@@ -922,7 +922,7 @@ async function updateUserRole(uid, role) {
     try {
       await rtdbUpdate(rtdbUser(uid), { role });
     } catch (e) {
-      console.warn('Avviso: aggiornamento RTDB ruolo non riuscito:', e.message);
+      console.warn('Avviso: aggiornamento RTDB ruolo non riuscito per uid:', uid, 'ruolo:', role, e.message);
     }
     await writeLog(`user_role_update:${uid}:${role}`);
     await loadUsersForAdmin();
@@ -945,7 +945,7 @@ async function toggleUserActive(uid) {
     try {
       await rtdbUpdate(rtdbUser(uid), { active: nextActive });
     } catch (e) {
-      console.warn('Avviso: aggiornamento RTDB stato non riuscito:', e.message);
+      console.warn('Avviso: aggiornamento RTDB stato non riuscito per uid:', uid, 'stato:', nextActive, e.message);
     }
     await writeLog(`user_${nextActive ? 'enable' : 'disable'}:${uid}`);
     await loadUsersForAdmin();
@@ -994,7 +994,11 @@ async function loadCurrentUserProfile(user) {
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = profile.role || 'waiter';
       // Migrate to RTDB for future logins
-      await writeUserToRTDB(user.uid, profile);
+      try {
+        await writeUserToRTDB(user.uid, profile);
+      } catch (e) {
+        console.warn('Avviso: migrazione a RTDB non riuscita per uid:', user.uid, e.message);
+      }
       return true;
     }
 
