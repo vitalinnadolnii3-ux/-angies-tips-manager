@@ -38,6 +38,7 @@ const APP_ROLES = ['Admin', 'Manager', 'Responsabile', 'Waiter'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
+const MINUTES_PER_DAY = 24 * 60;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -210,7 +211,6 @@ function parseTimeToMinutes(value) {
   const cleaned = String(value || '').trim();
   if (!cleaned) return null;
   const parts = cleaned.split(':');
-  if (!parts.length) return null;
   const hour = Number(parts[0]);
   const minute = Number(parts[1] || 0);
   if (!Number.isFinite(hour) || !Number.isFinite(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
@@ -242,7 +242,7 @@ function calculateWorkedMinutes(entryTime, exitTime, pauseMinutes = 0) {
   const exitMinutes = parseTimeToMinutes(exitTime);
   if (entryMinutes === null || exitMinutes === null) return null;
   let totalMinutes = exitMinutes - entryMinutes;
-  if (totalMinutes < 0) totalMinutes += 24 * 60;
+  if (totalMinutes < 0) totalMinutes += MINUTES_PER_DAY;
   totalMinutes -= normalizePauseMinutes(pauseMinutes);
   return Math.max(0, totalMinutes);
 }
@@ -1044,7 +1044,7 @@ function getAttendanceShiftWindow(shift) {
   const { startToken, endToken } = extractStartEndFromText(shiftText);
   const startMinutes = parseTimeToMinutes(shift.startTime || startToken);
   let endMinutes = parseTimeToMinutes(shift.endTime || endToken);
-  if (startMinutes !== null && endMinutes !== null && endMinutes < startMinutes) endMinutes += 24 * 60;
+  if (startMinutes !== null && endMinutes !== null && endMinutes < startMinutes) endMinutes += MINUTES_PER_DAY;
   return { shiftText, startMinutes, endMinutes };
 }
 
@@ -1080,8 +1080,8 @@ function getAttendanceComparison(uid, dateStr, entryTime, exitTime) {
   }
   if (exitMinutesRaw !== null && schedule.endMinutes !== null) {
     let exitMinutes = exitMinutesRaw;
-    if (schedule.endMinutes > 24 * 60 && schedule.startMinutes !== null && exitMinutes < schedule.startMinutes) {
-      exitMinutes += 24 * 60;
+    if (schedule.endMinutes > MINUTES_PER_DAY && schedule.startMinutes !== null && exitMinutes < schedule.startMinutes) {
+      exitMinutes += MINUTES_PER_DAY;
     }
     if (exitMinutes < schedule.endMinutes) {
       earlyLeaveMinutes = schedule.endMinutes - exitMinutes;
@@ -1156,7 +1156,7 @@ function renderAttendanceTable() {
   if (!table) return;
   const employees = getAttendanceEmployees();
   const canEdit = canManageAttendance();
-  let html = '<tr><th>Dipendente</th><th>Turno programmato</th><th>Entrata</th><th>Uscita</th><th>Pausa (min)</th><th>Note</th><th>Ore reali</th><th>Confronto</th></tr>';
+  let html = '<tr><th scope="col">Dipendente</th><th scope="col">Turno programmato</th><th scope="col">Entrata</th><th scope="col">Uscita</th><th scope="col">Pausa (min)</th><th scope="col">Note</th><th scope="col">Ore reali</th><th scope="col">Confronto</th></tr>';
   if (!employees.length) {
     table.innerHTML = `${html}<tr><td colspan="8">Nessun dipendente disponibile.</td></tr>`;
     return;
@@ -1189,7 +1189,7 @@ function renderAttendanceWeeklyTable() {
   if (!table) return;
   const employees = getAttendanceEmployees();
   const weekDates = getWeekDatesForDate(attendanceDate || today());
-  let html = '<tr><th>Dipendente</th><th>Giorni registrati</th><th>Ore totali</th><th>Ritardi</th><th>Uscite anticipate</th></tr>';
+  let html = '<tr><th scope="col">Dipendente</th><th scope="col">Giorni registrati</th><th scope="col">Ore totali</th><th scope="col">Ritardi</th><th scope="col">Uscite anticipate</th></tr>';
   if (!employees.length) {
     table.innerHTML = `${html}<tr><td colspan="5">Nessun dipendente disponibile.</td></tr>`;
     return;
