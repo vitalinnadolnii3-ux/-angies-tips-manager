@@ -18,6 +18,7 @@ let currentUserName = '';
 let currentUserRole = '';
 let hasLoadedSessionData = false;
 let employeesData = [];
+let usersData = [];
 let editingEmployeeId = '';
 let shiftsData = [];
 let shiftsUnsub = null;
@@ -386,6 +387,7 @@ async function logout() {
   todayShiftPopupShown = false;
   weekOffset = 0;
   shiftsData = [];
+  usersData = [];
   $('who').textContent = 'Online';
   if (unsub) {
     unsub();
@@ -442,6 +444,22 @@ async function loadEmployees() {
   }
 }
 
+async function loadUsersForAdmin() {
+  if (!isAdmin()) {
+    usersData = [];
+    renderUsersTable();
+    return;
+  }
+  try {
+    const snap = await getDocs(usersCollection());
+    usersData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+      .sort((a, b) => normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' }));
+    renderUsersTable();
+  } catch (e) {
+    console.error('Errore caricamento utenti:', e);
+  }
+}
+
 function clearEmployeeForm() {
   editingEmployeeId = '';
   $('employeeName').value = '';
@@ -483,6 +501,43 @@ function renderEmployeesTable() {
       <td><span class="status-badge ${statusClass}">${statusText}</span></td>
       <td class="table-actions">
         <button data-employee-action="edit" data-employee-id="${esc(emp.id)}">Modifica</button>
+      </td>
+    </tr>`;
+  });
+  table.innerHTML = html;
+}
+
+const USER_ROLES_ADMIN = ['admin', 'manager', 'responsible', 'waiter'];
+const USER_ROLES_ALL = [...USER_ROLES_ADMIN, 'kitchen'];
+
+function renderUsersTable() {
+  const table = $('usersList');
+  if (!table) return;
+  if (!isAdmin()) {
+    table.innerHTML = '<tr><td colspan="5">Accesso consentito solo agli admin.</td></tr>';
+    return;
+  }
+  let html = '<tr><th>Nome</th><th>Email</th><th>Ruolo</th><th>Stato</th><th>Azioni</th></tr>';
+  if (!usersData.length) {
+    html += '<tr><td colspan="5">Nessun utente registrato.</td></tr>';
+    table.innerHTML = html;
+    return;
+  }
+  usersData.forEach(u => {
+    const active = u.active !== false;
+    const statusClass = active ? 'status-enabled' : 'status-disabled';
+    const statusText = active ? 'Attivo' : 'Disattivato';
+    const displayName = esc(normalizeName((u.name || '') + (u.surname ? ' ' + u.surname : '')) || u.email || '-');
+    const roleOptions = USER_ROLES_ADMIN.map(r =>
+      `<option value="${r}"${u.role === r ? ' selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`
+    ).join('');
+    html += `<tr>
+      <td>${displayName}</td>
+      <td>${esc(u.email || '-')}</td>
+      <td><select class="user-role-select" data-user-id="${esc(u.id)}">${roleOptions}</select></td>
+      <td><span class="status-badge ${statusClass}">${statusText}</span></td>
+      <td class="table-actions">
+        <button data-user-action="toggle" data-user-id="${esc(u.id)}">${active ? 'Disattiva' : 'Attiva'}</button>
       </td>
     </tr>`;
   });
@@ -794,6 +849,44 @@ async function removeEmployee(id) {
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
     alert('Errore cancellazione profilo: ' + e.message);
+  }
+}
+
+async function updateUserRole(uid, role) {
+  if (!isAdmin()) return alert('Solo admin');
+  if (!USER_ROLES_ALL.includes(role)) return alert('Ruolo non valido.');
+  try {
+    await setDoc(userDoc(uid), { role, updatedAt: serverTimestamp() }, { merge: true });
+    // Sync to /employees/ for Firestore rules compatibility using shared helpers
+    const legacyRole = appRoleToLegacyRole(role);
+    const appRoleSync = normalizeAppRole(role);
+    await setDoc(employeeDoc(uid), { role: legacyRole, appRole: appRoleSync, updatedAt: serverTimestamp() }, { merge: true });
+    await writeLog(`user_role_update:${uid}:${role}`);
+    await loadUsersForAdmin();
+  } catch (e) {
+    console.error('Errore aggiornamento ruolo utente:', e);
+    alert('Errore aggiornamento ruolo: ' + e.message);
+    await loadUsersForAdmin();
+  }
+}
+
+async function toggleUserActive(uid) {
+  if (!isAdmin()) return alert('Solo admin');
+  const user = usersData.find(u => u.id === uid);
+  if (!user) return;
+  const nextActive = user.active === false;
+  try {
+    await setDoc(userDoc(uid), { active: nextActive, updatedAt: serverTimestamp() }, { merge: true });
+    await setDoc(employeeDoc(uid), { active: nextActive, enabled: nextActive, updatedAt: serverTimestamp() }, { merge: true });
+    await writeLog(`user_${nextActive ? 'enable' : 'disable'}:${uid}`);
+    await loadUsersForAdmin();
+    if (uid === currentUserUid && !nextActive) {
+      alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
+      await logout();
+    }
+  } catch (e) {
+    console.error('Errore aggiornamento stato utente:', e);
+    alert('Errore aggiornamento stato: ' + e.message);
   }
 }
 
@@ -1154,6 +1247,21 @@ function init() {
     if (!id || !action) return;
     if (action === 'edit') editEmployee(id);
   };
+  $('usersList').onchange = e => {
+    const select = e.target.closest('.user-role-select');
+    if (!select) return;
+    const uid = select.getAttribute('data-user-id') || '';
+    if (!uid) return;
+    updateUserRole(uid, select.value);
+  };
+  $('usersList').onclick = e => {
+    const btn = e.target.closest('button[data-user-action]');
+    if (!btn) return;
+    const uid = btn.getAttribute('data-user-id') || '';
+    const action = btn.getAttribute('data-user-action');
+    if (!uid || !action) return;
+    if (action === 'toggle') toggleUserActive(uid);
+  };
   $('loginBtn').onclick = doLogin;
   $('logoutBtn').onclick = logout;
   $('msg').onkeypress = e => { if (e.key === 'Enter') sendMsg(); };
@@ -1175,6 +1283,7 @@ function tab(id, b) {
     alert('Non hai i permessi per accedere a questa sezione.');
     return;
   }
+  if (id === 'settings') loadUsersForAdmin();
   if (id === 'myShifts' && canManageShifts()) {
     alert('Questa vista è disponibile per i dipendenti.');
     return;
@@ -1260,6 +1369,7 @@ function render() {
   stats();
   settings();
   renderEmployeesTable();
+  renderUsersTable();
   renderShifts();
 }
 
