@@ -107,13 +107,19 @@ function setAttendanceStatus(message = '', type = 'info') {
 
 function withTimeout(promise, timeoutMs = 15000, label = 'Operazione') {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(value);
+    };
     const timer = setTimeout(() => {
-      reject(new Error(`${label} non completata entro ${Math.round(timeoutMs / 1000)}s.`));
+      finish(reject, new Error(`${label} non completata entro ${Math.round(timeoutMs / 1000)}s.`));
     }, timeoutMs);
     Promise.resolve(promise)
-      .then(resolve)
-      .catch(reject)
-      .finally(() => clearTimeout(timer));
+      .then(value => finish(resolve, value))
+      .catch(error => finish(reject, error));
   });
 }
 
@@ -2455,22 +2461,30 @@ window.addEventListener('load', async () => {
         const startupTasks = [];
         if (!hasLoadedSessionData) {
           startupTasks.push(
-            withTimeout(load(), PRIMARY_LOAD_TIMEOUT_MS, 'Caricamento dati principali')
-              .then(() => { hasLoadedSessionData = true; })
-              .catch(err => {
-                hasLoadedSessionData = false;
-                throw err;
-              })
+            {
+              label: 'Caricamento dati principali',
+              promise: withTimeout(load(), PRIMARY_LOAD_TIMEOUT_MS, 'Caricamento dati principali')
+                .then(() => { hasLoadedSessionData = true; })
+            }
           );
         }
-        startupTasks.push(withTimeout(loadEmployees(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento dipendenti'));
-        startupTasks.push(withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita'));
-        const startupResults = await Promise.allSettled(startupTasks);
+        startupTasks.push({
+          label: 'Caricamento dipendenti',
+          promise: withTimeout(loadEmployees(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento dipendenti')
+        });
+        startupTasks.push({
+          label: 'Caricamento entrata e uscita',
+          promise: withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
+        });
+        const startupResults = await Promise.allSettled(startupTasks.map(task => task.promise));
         const startupErrors = startupResults
-          .filter(result => result.status === 'rejected')
-          .map(result => result.reason?.message || 'Errore sconosciuto');
+          .map((result, index) => {
+            if (result.status !== 'rejected') return '';
+            return `${startupTasks[index].label}: ${result.reason?.message || 'Errore non dettagliato'}`;
+          })
+          .filter(Boolean);
         if (startupErrors.length) {
-          console.warn('[Auth] Alcuni caricamenti post-login non sono riusciti:', startupErrors);
+          console.warn('[Auth] Alcuni caricamenti post-login non sono riusciti:', startupErrors, startupResults);
           setStatus('loginStatus', `Accesso completato con avvisi: ${startupErrors.join(' | ')}`, 'error');
         } else {
           setStatus('loginStatus', '', 'info');
