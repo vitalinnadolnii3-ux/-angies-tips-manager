@@ -232,7 +232,7 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
     .filter(Boolean);
   if (syncFailures.length) {
     console.warn('[Profilo] Sincronizzazione profilo admin incompleta:', syncFailures);
-    setStatus('loginStatus', 'Profilo admin sincronizzato solo in parte. Se mancano dati o permessi, completa il deploy delle regole Firebase e ripeti il login.', 'error');
+    setStatus('loginStatus', 'Profilo admin sincronizzato solo in parte. Se mancano dati o permessi, contatta un amministratore e ripeti il login.', 'error');
   }
   return { name, surname, email, phone, restaurantRole };
 }
