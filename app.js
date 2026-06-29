@@ -461,9 +461,20 @@ async function doLogin() {
     // Profile loading happens in onAuthStateChanged
   } catch (e) {
     console.error('[Login] Errore autenticazione Firebase:', e.code, e.message);
-    const msg = e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential'
-      ? 'Email o password non corretti.'
-      : 'Errore login: ' + e.message;
+    let msg;
+    if (['auth/wrong-password', 'auth/user-not-found', 'auth/invalid-credential'].includes(e.code)) {
+      msg = 'Email o password non corretti.';
+    } else if (e.code === 'auth/user-disabled') {
+      msg = 'Account disabilitato. Contatta un amministratore.';
+    } else if (e.code === 'auth/too-many-requests') {
+      msg = 'Troppi tentativi falliti. Riprova tra qualche minuto.';
+    } else if (e.code === 'auth/network-request-failed') {
+      msg = 'Errore di rete. Controlla la connessione e riprova.';
+    } else if (e.code === 'auth/invalid-email') {
+      msg = 'Formato email non valido.';
+    } else {
+      msg = 'Errore login: ' + e.message;
+    }
     setStatus('loginStatus', msg, 'error');
   }
 }
@@ -539,8 +550,14 @@ async function loadEmployees() {
       .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
     renderEmployeesTable();
   } catch (e) {
-    console.error('Errore caricamento dipendenti:', e);
-    alert('Errore caricamento dipendenti: ' + e.message);
+    if (e.code === 'permission-denied') {
+      // Non-admin users without an employee profile cannot read the collection — not an error.
+      console.log('[Dipendenti] Lettura non autorizzata (utente senza profilo dipendente):', e.code);
+    } else {
+      console.error('Errore caricamento dipendenti:', e);
+    }
+    employeesData = [];
+    renderEmployeesTable();
   }
 }
 
