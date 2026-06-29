@@ -42,6 +42,7 @@ const MINUTES_PER_DAY = 24 * 60;
 const PROFILE_LOAD_TIMEOUT_MS = 15000;
 const PRIMARY_LOAD_TIMEOUT_MS = 15000;
 const SECONDARY_LOAD_TIMEOUT_MS = 12000;
+const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -170,6 +171,60 @@ function appRoleToLegacyRole(appRole) {
 function deriveNameFromEmail(email) {
   const localPart = normalizeName(String(email || '').split('@')[0]);
   return localPart || String(email || '').trim() || 'Unknown';
+}
+
+function isBootstrapAdminEmail(email) {
+  return BOOTSTRAP_ADMIN_EMAILS.includes(normalizeEmail(email));
+}
+
+async function ensureBootstrapAdminProfile(user, profile = {}) {
+  const name = normalizeName(profile.name) || deriveNameFromEmail(user.email);
+  const surname = normalizeName(profile.surname || '');
+  const email = normalizeEmail(user.email);
+  const phone = String(profile.phone || '').trim();
+  const restaurantRole = normalizeRestaurantRole(profile.restaurantRole || '');
+  const syncResults = await Promise.allSettled([
+    rtdbSet(rtdbUser(user.uid), {
+      email,
+      name,
+      role: 'admin',
+      active: true
+    }),
+    setDoc(userDoc(user.uid), {
+      name,
+      surname,
+      email,
+      phone,
+      restaurantRole,
+      appRole: 'Admin',
+      role: 'admin',
+      active: true,
+      updatedAt: serverTimestamp()
+    }, { merge: true }),
+    setDoc(employeeDoc(user.uid), {
+      name,
+      surname,
+      email,
+      phone,
+      restaurantRole,
+      appRole: 'Admin',
+      role: 'Admin',
+      enabled: true,
+      active: true,
+      updatedAt: serverTimestamp()
+    }, { merge: true })
+  ]);
+  const syncFailures = syncResults
+    .map((result, index) => {
+      if (result.status !== 'rejected') return '';
+      const label = ['RTDB users', 'Firestore /users', 'Firestore /employees'][index];
+      return `${label}: ${getErrorDetails(result.reason)}`;
+    })
+    .filter(Boolean);
+  if (syncFailures.length) {
+    console.warn('[Profilo] Sincronizzazione profilo admin incompleta:', syncFailures);
+  }
+  return { name, surname, email, phone, restaurantRole };
 }
 
 function employeeCollection() {
@@ -1094,9 +1149,8 @@ async function loadCurrentUserProfile(user) {
   currentUserUid = user.uid || '';
   currentUserName = deriveNameFromEmail(user.email);
   currentUserRole = '';
-
-  const ADMIN_EMAIL = 'vitalinnadolnii3@gmail.com';
-  console.log('[Profilo] Caricamento profilo per:', currentUser, '| uid:', currentUserUid);
+  const bootstrapAdmin = isBootstrapAdminEmail(user.email);
+  console.log('[Profilo] Caricamento profilo per:', currentUser, '| uid:', currentUserUid, '| bootstrap admin:', bootstrapAdmin);
 
   // 1. Try Realtime Database users/{uid} (primary RBAC source)
   let rtdbProfile = null;
@@ -1115,6 +1169,17 @@ async function loadCurrentUserProfile(user) {
   }
 
   if (rtdbProfile !== null) {
+    const bootstrapProfile = {
+      name: normalizeName(rtdbProfile.name) || currentUserName,
+      email: currentUser
+    };
+    if (bootstrapAdmin) {
+      const syncedProfile = await ensureBootstrapAdminProfile(user, bootstrapProfile);
+      currentUserName = syncedProfile.name;
+      currentUserRole = 'admin';
+      console.log('[Profilo] Accesso admin bootstrap riuscito da RTDB.');
+      return true;
+    }
     const active = rtdbProfile.active !== false;
     if (!active) {
       console.warn('[Profilo] Account disattivato (RTDB) per uid:', currentUserUid);
@@ -1140,6 +1205,13 @@ async function loadCurrentUserProfile(user) {
     if (userSnap.exists()) {
       const profile = userSnap.data();
       console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
+      if (bootstrapAdmin) {
+        const syncedProfile = await ensureBootstrapAdminProfile(user, profile);
+        currentUserName = syncedProfile.name;
+        currentUserRole = 'admin';
+        console.log('[Profilo] Accesso admin bootstrap riuscito da Firestore /users/.');
+        return true;
+      }
       const active = profile.active !== false;
       if (!active) {
         setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
@@ -1170,6 +1242,13 @@ async function loadCurrentUserProfile(user) {
     if (profileSnap.exists()) {
       const profile = profileSnap.data();
       console.log('[Profilo] Profilo Firestore /employees/ trovato:', profile);
+      if (bootstrapAdmin) {
+        const syncedProfile = await ensureBootstrapAdminProfile(user, profile);
+        currentUserName = syncedProfile.name;
+        currentUserRole = 'admin';
+        console.log('[Profilo] Accesso admin bootstrap riuscito da Firestore /employees/.');
+        return true;
+      }
       const enabled = profile.enabled !== false && profile.active !== false;
       if (!enabled) {
         setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
@@ -1214,10 +1293,20 @@ async function loadCurrentUserProfile(user) {
   }
 
   // 4. Auto-bootstrap: create profile for this user
-  const isAdminEmail = normalizeEmail(user.email) === ADMIN_EMAIL;
+  const isAdminEmail = bootstrapAdmin;
   const autoRole = isAdminEmail ? 'admin' : 'waiter';
   const autoName = deriveNameFromEmail(user.email);
   console.log('[Profilo] Creazione automatica profilo. Email:', currentUser, '| Ruolo assegnato:', autoRole);
+
+  if (isAdminEmail) {
+    const syncedProfile = await ensureBootstrapAdminProfile(user, { name: autoName, email: currentUser });
+    currentUserName = syncedProfile.name;
+    currentUserRole = 'admin';
+    setStatus('loginStatus', 'Profilo admin creato automaticamente. Benvenuto!', 'info');
+    console.log('[Profilo] Bootstrap admin completato. Ruolo finale:', currentUserRole);
+    try { await writeLog('employee_profile_bootstrap'); } catch (e) { console.warn('[Profilo] writeLog non riuscito (non bloccante):', e.message); }
+    return true;
+  }
 
   // Try RTDB write first (may fail for non-admins if rules block it)
   try {
