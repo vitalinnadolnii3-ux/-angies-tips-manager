@@ -20,7 +20,7 @@ In alternativa puoi pubblicare automaticamente regole e indici con Firebase CLI:
 - `firebase login`
 - `firebase deploy --only firestore,database`
 
-Poi crea un utente in Firebase > Authentication > Users > Add user.
+Poi crea solo l'utente admin bootstrap in Firebase > Authentication > Users > Add user. Gli altri dipendenti vengono creati automaticamente dalla tab Dipendenti con password iniziale `angiesroma`.
 
 Per la gestione dipendenti admin dall'app:
 - collezione Firestore: `restaurants/angies/employees/{uid}` con campi `email`, `name`, `role`, `enabled`, `createdAt`, `updatedAt`
@@ -32,6 +32,7 @@ Per la gestione dipendenti admin dall'app:
   - `updateEmployeeAuthUser`
   - `deleteEmployeeAuthUser`
 Se `createEmployeeAuthUser` non è disponibile, la creazione usa fallback client-side con sessione secondaria.
+Il pulsante "Reimposta password" prova prima a riportare la password a `angiesroma` tramite `updateEmployeeAuthUser`; se la funzione non è disponibile, invia automaticamente l'email di reset di Firebase.
 
 Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7

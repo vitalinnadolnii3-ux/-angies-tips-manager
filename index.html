@@ -136,7 +136,6 @@
           <label>Cognome<input id="employeeSurname" type="text" placeholder="Cognome dipendente"></label>
           <label>Email<input id="employeeEmail" type="email" placeholder="email@azienda.com"></label>
           <label>Telefono<input id="employeePhone" type="tel" placeholder="+39 000 000 0000"></label>
-          <label>Password<input id="employeePassword" type="password" autocomplete="new-password" placeholder="Minimo 8 caratteri"></label>
           <label>Posizione nel ristorante
             <select id="employeeRestaurantRole">
               <option value="">Seleziona posizione</option>
@@ -157,6 +156,15 @@
               <option value="Waiter">Waiter</option>
             </select>
           </label>
+          <label>Stato
+            <select id="employeeStatus">
+              <option value="true">Attivo</option>
+              <option value="false">Disattivato</option>
+            </select>
+          </label>
+        </div>
+        <div class="panel">
+          <strong>Password iniziale:</strong> angiesroma
         </div>
         <div id="employeeCreateActions" class="actions">
           <button id="employeeSaveBtn">Crea dipendente</button>
@@ -299,6 +307,7 @@
         </div>
         <div class="actions">
           <button id="modalEmpSaveBtn">Salva</button>
+          <button id="modalEmpResetPasswordBtn">Reimposta password</button>
           <button id="modalEmpDeleteBtn" class="danger">Elimina</button>
           <button id="modalEmpCloseBtn" class="clear">Annulla</button>
         </div>
@@ -306,6 +315,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=21"></script>
+  <script type="module" src="app.js?v=22"></script>
 </body>
 </html>
