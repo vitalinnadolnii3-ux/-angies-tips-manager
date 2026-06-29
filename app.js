@@ -102,6 +102,18 @@ function setAttendanceStatus(message = '', type = 'info') {
   setStatus('attendanceStatus', message, type);
 }
 
+function withTimeout(promise, timeoutMs = 15000, label = 'Operazione') {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} non completata entro ${Math.round(timeoutMs / 1000)}s.`));
+    }, timeoutMs);
+    Promise.resolve(promise)
+      .then(resolve)
+      .catch(reject)
+      .finally(() => clearTimeout(timer));
+  });
+}
+
 function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
 }
@@ -2395,7 +2407,7 @@ window.addEventListener('load', async () => {
     try {
       ensureFirebaseServicesReady();
       if (user) {
-        const loadedProfile = await loadCurrentUserProfile(user);
+        const loadedProfile = await withTimeout(loadCurrentUserProfile(user), 15000, 'Caricamento profilo');
         if (!loadedProfile) {
           hasLoadedSessionData = false;
           localStorage.removeItem(SESSION_KEY);
@@ -2427,21 +2439,37 @@ window.addEventListener('load', async () => {
         $('who').textContent = `${currentUser} (${currentUserRole})`;
         $('loginPass').value = '';
         todayShiftPopupShown = false;
-        if (!hasLoadedSessionData) {
-          await load();
-          hasLoadedSessionData = true;
-        }
-        await loadEmployees();
         syncEmployeeTabVisibility();
         syncShiftTabVisibility();
         syncSettingsTabVisibility();
         populateShiftEmployeeOptions();
         attachShiftListeners();
-        await loadAttendanceData();
         render();
         showApp();
+        setStatus('loginStatus', '', 'info');
         chatListen();
         writeLog('login');
+
+        const startupTasks = [];
+        if (!hasLoadedSessionData) {
+          startupTasks.push(
+            withTimeout(load(), 15000, 'Caricamento dati principali')
+              .then(() => { hasLoadedSessionData = true; })
+          );
+        }
+        startupTasks.push(withTimeout(loadEmployees(), 12000, 'Caricamento dipendenti'));
+        startupTasks.push(withTimeout(loadAttendanceData(), 12000, 'Caricamento entrata e uscita'));
+        const startupResults = await Promise.allSettled(startupTasks);
+        const startupErrors = startupResults
+          .filter(result => result.status === 'rejected')
+          .map(result => result.reason?.message || 'Errore sconosciuto');
+        if (startupErrors.length) {
+          console.warn('[Auth] Alcuni caricamenti post-login non sono riusciti:', startupErrors);
+          setStatus('loginStatus', `Accesso completato con avvisi: ${startupErrors.join(' | ')}`, 'info');
+        } else {
+          setStatus('loginStatus', '', 'info');
+        }
+        render();
       } else {
         hasLoadedSessionData = false;
         localStorage.removeItem(SESSION_KEY);
