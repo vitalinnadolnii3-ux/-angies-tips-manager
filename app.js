@@ -39,9 +39,10 @@ const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
 const MINUTES_PER_DAY = 24 * 60;
-const PROFILE_LOAD_TIMEOUT_MS = 15000;
-const PRIMARY_LOAD_TIMEOUT_MS = 15000;
-const SECONDARY_LOAD_TIMEOUT_MS = 12000;
+const PROFILE_LOAD_TIMEOUT_MS = 30000;
+const PRIMARY_LOAD_TIMEOUT_MS = 30000;
+const SECONDARY_LOAD_TIMEOUT_MS = 25000;
+const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 
 const $ = id => document.getElementById(id);
@@ -122,6 +123,28 @@ function withTimeout(promise, timeoutMs = 15000, label = 'Operazione') {
       .then(value => finish(resolve, value))
       .catch(error => finish(reject, error));
   });
+}
+
+async function withRetry(fn, maxAttempts = 2, label = 'Operazione') {
+  // maxAttempts is the total number of attempts (1 = no retry, 2 = one retry, etc.)
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      lastError = e;
+      const isNetworkError = ['unavailable', 'auth/network-request-failed', 'deadline-exceeded'].includes(e.code) ||
+        String(e.message || '').toLowerCase().includes('network');
+      if (isNetworkError && attempt < maxAttempts) {
+        const delay = attempt * 1500;
+        console.warn(`[Retry] ${label} tentativo ${attempt}/${maxAttempts} fallito (${e.code || e.message}). Riprovo tra ${delay}ms…`);
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw e;
+      }
+    }
+  }
+  throw lastError;
 }
 
 function normalizeName(s) {
@@ -1162,20 +1185,27 @@ async function loadCurrentUserProfile(user) {
   const bootstrapAdmin = isBootstrapAdminEmail(user.email);
   console.log('[Profilo] Caricamento profilo per:', currentUser, '| uid:', currentUserUid, '| bootstrap admin:', bootstrapAdmin);
 
+  // Fire all 3 reads in parallel for faster profile loading
+  console.log('[Profilo] Avvio lettura parallela da RTDB, Firestore /users/, Firestore /employees/…');
+  const [rtdbResult, usersResult, employeesResult] = await Promise.allSettled([
+    withRetry(() => rtdbGet(rtdbUser(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'RTDB users/' + currentUserUid),
+    withRetry(() => getDoc(userDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /users/' + currentUserUid),
+    withRetry(() => getDoc(employeeDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /employees/' + currentUserUid)
+  ]);
+
   // 1. Try Realtime Database users/{uid} (primary RBAC source)
   let rtdbProfile = null;
-  try {
-    console.log('[Profilo] Lettura RTDB users/' + currentUserUid + '…');
-    const rtdbSnap = await rtdbGet(rtdbUser(user.uid));
+  if (rtdbResult.status === 'fulfilled') {
+    const rtdbSnap = rtdbResult.value;
     if (rtdbSnap.exists()) {
       rtdbProfile = rtdbSnap.val();
       console.log('[Profilo] Profilo RTDB trovato:', rtdbProfile);
     } else {
       console.log('[Profilo] Profilo RTDB non trovato — provo Firestore.');
     }
-  } catch (e) {
-    console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', e.code, e.message);
-    setStatus('loginStatus', 'Avviso RTDB: ' + e.message + ' — uso profilo alternativo.', 'info');
+  } else {
+    console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', rtdbResult.reason?.code, rtdbResult.reason?.message);
+    setStatus('loginStatus', 'Avviso RTDB: ' + getErrorDetails(rtdbResult.reason) + ' — uso profilo alternativo.', 'info');
   }
 
   if (rtdbProfile !== null) {
@@ -1209,9 +1239,8 @@ async function loadCurrentUserProfile(user) {
   }
 
   // 2. Try Firestore /users/ collection
-  try {
-    console.log('[Profilo] Lettura Firestore /users/' + currentUserUid + '…');
-    const userSnap = await getDoc(userDoc(user.uid));
+  if (usersResult.status === 'fulfilled') {
+    const userSnap = usersResult.value;
     if (userSnap.exists()) {
       const profile = userSnap.data();
       console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
@@ -1241,14 +1270,13 @@ async function loadCurrentUserProfile(user) {
       return true;
     }
     console.log('[Profilo] Profilo Firestore /users/ non trovato — provo /employees/.');
-  } catch (e) {
-    console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', e.code, e.message);
+  } else {
+    console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', usersResult.reason?.code, usersResult.reason?.message);
   }
 
   // 3. Try Firestore /employees/ collection
-  try {
-    console.log('[Profilo] Lettura Firestore /employees/' + currentUserUid + '…');
-    const profileSnap = await getDoc(employeeDoc(user.uid));
+  if (employeesResult.status === 'fulfilled') {
+    const profileSnap = employeesResult.value;
     if (profileSnap.exists()) {
       const profile = profileSnap.data();
       console.log('[Profilo] Profilo Firestore /employees/ trovato:', profile);
@@ -1298,8 +1326,8 @@ async function loadCurrentUserProfile(user) {
       return true;
     }
     console.log('[Profilo] Profilo Firestore /employees/ non trovato — creo profilo automatico.');
-  } catch (e) {
-    console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', e.code, e.message);
+  } else {
+    console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', employeesResult.reason?.code, employeesResult.reason?.message);
   }
 
   // 4. Auto-bootstrap: create profile for this user
