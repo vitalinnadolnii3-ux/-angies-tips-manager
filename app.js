@@ -244,6 +244,7 @@ function getWeekStartISO(dateStr) {
 function parseTimeToMinutes(value) {
   const cleaned = String(value || '').trim();
   if (!cleaned) return null;
+  if (!/^\d{1,2}(?::\d{2})?$/.test(cleaned)) return null;
   const parts = cleaned.split(':');
   const hour = Number(parts[0]);
   const minute = Number(parts[1] || 0);
@@ -1183,7 +1184,7 @@ function getAttendanceComparison(uid, dateStr, entryTime, exitTime) {
   }
   if (exitMinutesRaw !== null && schedule.endMinutes !== null) {
     let exitMinutes = exitMinutesRaw;
-    if (schedule.endMinutes > MINUTES_PER_DAY && schedule.startMinutes !== null && exitMinutes < schedule.startMinutes) {
+    if (schedule.endMinutes >= MINUTES_PER_DAY && schedule.startMinutes !== null && exitMinutes < schedule.startMinutes) {
       exitMinutes += MINUTES_PER_DAY;
     }
     if (exitMinutes < schedule.endMinutes) {

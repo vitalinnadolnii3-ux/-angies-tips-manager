@@ -30,7 +30,7 @@
         "$uid": {
           ".read": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
           ".write": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
-          ".validate": "newData.val() == null || (newData.hasChildren(['uid','employeeName','date','entryTime','exitTime','pauseMinutes','notes','workedMinutes','scheduledShiftText','delayMinutes','earlyLeaveMinutes','updatedAt','updatedBy']) && newData.child('uid').val() === $uid && newData.child('date').val() === $date)",
+          ".validate": "newData.val() == null || (newData.child('uid').val() === $uid && newData.child('date').val() === $date)",
           "uid": {
             ".validate": "newData.isString() && newData.val() === $uid"
           },
