@@ -11,7 +11,7 @@ const auth = getAuth(fbApp);
 const functions = getFunctions(fbApp);
 const rtdb = getDatabase(fbApp);
 
-const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex"];
+const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex","Mariia Sevastianova"];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
 let currentUser = '';
