@@ -12,6 +12,12 @@ service cloud.firestore {
         request.auth.token.email == 'vitalinnadolnii3@gmail.com';
     }
 
+    function isBootstrapAdminSelfRepair(targetUid) {
+      return signedIn() &&
+        request.auth.uid == targetUid &&
+        isBootstrapAdminEmail();
+    }
+
     function employeeProfile() {
       return get(/databases/$(database)/documents/restaurants/angies/employees/$(request.auth.uid));
     }
@@ -91,9 +97,7 @@ service cloud.firestore {
       allow read: if signedIn() && (request.auth.uid == uid || isManagerOrAdmin());
       // Admins can manage all user documents; the bootstrap admin can repair their own profile
       allow create, update: if (isAdmin() ||
-        (signedIn() &&
-         request.auth.uid == uid &&
-         isBootstrapAdminEmail() &&
+        (isBootstrapAdminSelfRepair(uid) &&
          request.resource.data.active == true &&
          request.resource.data.role == 'admin')) &&
         request.resource.data.role is string &&
@@ -105,9 +109,7 @@ service cloud.firestore {
     match /restaurants/angies/employees/{employeeId} {
       allow read: if signedIn() && employeeEnabled();
       allow create, update: if (isAdmin() ||
-        (signedIn() &&
-         request.auth.uid == employeeId &&
-         isBootstrapAdminEmail() &&
+        (isBootstrapAdminSelfRepair(employeeId) &&
          request.resource.data.active == true &&
          request.resource.data.enabled == true &&
          request.resource.data.role == 'Admin')) &&
