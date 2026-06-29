@@ -1272,7 +1272,6 @@ async function loadCurrentUserProfile(user) {
     console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', e.code, e.message);
   }
   // 4. Auto-bootstrap: create profile for this user
-  // 4. Auto-bootstrap: create profile for this user
   const autoRole = getBootstrapRole(user);
   const autoName = deriveNameFromEmail(user.email);
   console.log('[Profilo] Creazione automatica profilo. Email:', currentUser, '| Ruolo assegnato:', autoRole);
