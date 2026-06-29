@@ -2473,13 +2473,7 @@ window.addEventListener('load', async () => {
       setStatus('loginStatus', `Login fallito: ${detail}`, 'error');
       showLogin();
       hasLoadedSessionData = false;
-      if (auth.currentUser) {
-        try {
-          await signOut(auth);
-        } catch (signOutError) {
-          console.warn('[Auth] Sign-out dopo errore login non riuscito:', getErrorDetails(signOutError));
-        }
-      }
+      localStorage.removeItem(SESSION_KEY);
     }
   });
 });
