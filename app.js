@@ -2515,7 +2515,25 @@ window.addEventListener('load', async () => {
     try {
       ensureFirebaseServicesReady();
       if (user) {
-        const loadedProfile = await withTimeout(loadCurrentUserProfile(user), PROFILE_LOAD_TIMEOUT_MS, 'Caricamento profilo');
+        let loadedProfile;
+        try {
+          loadedProfile = await withTimeout(loadCurrentUserProfile(user), PROFILE_LOAD_TIMEOUT_MS, 'Caricamento profilo');
+        } catch (profileErr) {
+          if (isBootstrapAdminEmail(user.email)) {
+            console.warn('[Auth] Timeout/errore caricamento profilo per admin bootstrap — profilo locale attivato:', profileErr.message);
+            currentUser = user.email || '';
+            currentUserUid = user.uid || '';
+            currentUserName = deriveNameFromEmail(user.email);
+            currentUserRole = 'admin';
+            setStatus('loginStatus', 'Database non raggiungibile — profilo admin locale attivato.', 'info');
+            loadedProfile = true;
+            ensureBootstrapAdminProfile(user, { name: currentUserName, email: currentUser }).catch(syncErr => {
+              console.warn('[Auth] Sincronizzazione profilo admin in background non riuscita:', syncErr.message);
+            });
+          } else {
+            throw profileErr;
+          }
+        }
         if (!loadedProfile) {
           hasLoadedSessionData = false;
           localStorage.removeItem(SESSION_KEY);
