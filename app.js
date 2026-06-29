@@ -195,16 +195,23 @@ function roleToAppRoleLabel(role) {
   const normalized = normalizeStoredRole(role);
   if (normalized === 'admin') return 'Admin';
   if (normalized === 'manager') return 'Manager';
-  if (normalized === 'responsible') return 'Responsabile';
+  if (normalized === 'responsible') return 'Responsible';
   if (normalized === 'kitchen') return 'Kitchen';
   return 'Waiter';
 }
 
 function generateTemporaryEmployeePassword() {
   const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%*';
-  const random = new Uint32Array(14);
-  crypto.getRandomValues(random);
-  const core = Array.from(random, n => alphabet[n % alphabet.length]).join('');
+  const charsLen = alphabet.length;
+  const maxValid = 256 - (256 % charsLen);
+  const random = new Uint8Array(1);
+  let core = '';
+  while (core.length < 14) {
+    crypto.getRandomValues(random);
+    const value = random[0];
+    if (value >= maxValid) continue;
+    core += alphabet[value % charsLen];
+  }
   return `Tmp#${core}9a`;
 }
 

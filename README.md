@@ -33,7 +33,7 @@ Per la gestione dipendenti admin dall'app:
   - `updateEmployeeAuthUser`
   - `deleteEmployeeAuthUser`
 Se `createEmployeeAuthUser` non è disponibile, la creazione usa fallback client-side con sessione secondaria.
-Il pulsante "Reimposta password" prova prima a impostare una password temporanea casuale tramite `updateEmployeeAuthUser`; se la funzione non è disponibile, invia automaticamente l'email di reset di Firebase.
+Il pulsante "Reimposta password" invia automaticamente l'email di reset password di Firebase all'indirizzo del dipendente.
 
 Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
