@@ -20,7 +20,7 @@ In alternativa puoi pubblicare automaticamente regole e indici con Firebase CLI:
 - `firebase login`
 - `firebase deploy --only firestore,database`
 
-Poi crea solo l'utente admin bootstrap in Firebase > Authentication > Users > Add user. Gli altri dipendenti vengono creati automaticamente dalla tab Dipendenti con la password iniziale predefinita dell'app. Per sicurezza, chiedi al dipendente di cambiarla subito dopo il primo accesso.
+Poi crea solo l'utente admin bootstrap in Firebase > Authentication > Users > Add user. Gli altri dipendenti vengono creati automaticamente dalla tab Dipendenti con password temporanea casuale e invio email di reset/attivazione.
 L'accesso è consentito solo agli utenti già registrati nel database dell'app (`users/{uid}` RTDB oppure `restaurants/angies/users|employees/{uid}` in Firestore): se non esiste un profilo salvato, il login viene bloccato.
 
 Per la gestione dipendenti admin dall'app:
@@ -33,7 +33,7 @@ Per la gestione dipendenti admin dall'app:
   - `updateEmployeeAuthUser`
   - `deleteEmployeeAuthUser`
 Se `createEmployeeAuthUser` non è disponibile, la creazione usa fallback client-side con sessione secondaria.
-Il pulsante "Reimposta password" prova prima a ripristinare la password predefinita tramite `updateEmployeeAuthUser`; se la funzione non è disponibile, invia automaticamente l'email di reset di Firebase.
+Il pulsante "Reimposta password" prova prima a impostare una password temporanea casuale tramite `updateEmployeeAuthUser`; se la funzione non è disponibile, invia automaticamente l'email di reset di Firebase.
 
 Apri il sito con:
 https://vitalinnadolnii3-ux.github.io/-angies-tips-manager/?v=7
@@ -43,3 +43,13 @@ Prima di bloccare Realtime Database con le regole versionate, assicurati che `us
 Dopo ogni aggiornamento di regole o indici esegui `firebase deploy --only firestore,database` prima di usare la gestione turni o l'area entrata/uscita.
 
 Bootstrap admin: se cambi l'email admin preconfigurata, cerca l'indirizzo corrente e aggiornalo negli stessi tre punti `app.js`, `FIRESTORE_RULES.txt` e `database.rules.json`, poi ridistribuisci l'app e le regole Firebase.
+
+Checklist test manuali regressione (minima):
+- Login utente valido e logout.
+- Blocco login per utente senza profilo su `users/{uid}` o `restaurants/angies/users|employees/{uid}`.
+- Creazione dipendente (email/telefono validi, ruolo, attivo/disattivo) e ricezione email reset.
+- Reset password dipendente e verifica accesso dopo reset.
+- Verifica ruoli: waiter vede solo i propri dati; admin/manager vedono dati completi.
+- Inserimento mance con controlli su data/importi obbligatori e non negativi.
+- Salvataggio turni e attendance con controlli di input e messaggi stato.
+- Deploy regole Firestore/RTDB e verifica accessi da account waiter vs manager/admin.

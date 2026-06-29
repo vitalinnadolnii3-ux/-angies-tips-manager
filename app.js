@@ -43,7 +43,8 @@ const PROFILE_LOAD_TIMEOUT_MS = 30000;
 const PRIMARY_LOAD_TIMEOUT_MS = 30000;
 const SECONDARY_LOAD_TIMEOUT_MS = 25000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
-const DEFAULT_EMPLOYEE_PASSWORD = 'angiesroma';
+const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
+const MAX_TIP_AMOUNT = 100000;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 
@@ -137,6 +138,85 @@ function setShiftStatus(message = '', type = 'info') {
 
 function setAttendanceStatus(message = '', type = 'info') {
   setStatus('attendanceStatus', message, type);
+}
+
+function setAppStatus(message = '', type = 'info') {
+  setStatus('appStatus', message, type);
+}
+
+function notify(message = '', type = 'info', statusId = 'appStatus') {
+  if (statusId && $(statusId)) {
+    setStatus(statusId, message, type);
+  } else {
+    setAppStatus(message, type);
+  }
+}
+
+function sanitizeMoneyInput(value) {
+  const parsed = Number(String(value ?? '').replace(',', '.'));
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.round(parsed * 100) / 100;
+}
+
+function sanitizeHourInput(value) {
+  const parsed = Number(String(value ?? '').replace(',', '.'));
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.round(parsed * 100) / 100;
+}
+
+function isValidEmailFormat(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email || '').trim());
+}
+
+function normalizePhone(phone) {
+  return String(phone || '').trim().replace(/\s+/g, ' ');
+}
+
+function isValidPhoneFormat(phone) {
+  if (!phone) return true;
+  return /^\+?[0-9\s().-]{7,20}$/.test(phone);
+}
+
+function validateISODate(dateStr) {
+  const cleaned = String(dateStr || '').trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(cleaned)) return false;
+  const d = new Date(`${cleaned}T00:00:00`);
+  return !Number.isNaN(d.getTime()) && cleaned === d.toISOString().slice(0, 10);
+}
+
+function normalizeStoredRole(role) {
+  const cleaned = String(role || '').trim().toLowerCase();
+  if (!cleaned) return 'waiter';
+  if (cleaned === 'responsabile') return 'responsible';
+  return ROLE_STORAGE_VALUES.includes(cleaned) ? cleaned : 'waiter';
+}
+
+function roleToAppRoleLabel(role) {
+  const normalized = normalizeStoredRole(role);
+  if (normalized === 'admin') return 'Admin';
+  if (normalized === 'manager') return 'Manager';
+  if (normalized === 'responsible') return 'Responsabile';
+  if (normalized === 'kitchen') return 'Kitchen';
+  return 'Waiter';
+}
+
+function generateTemporaryEmployeePassword() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%*';
+  const random = new Uint32Array(14);
+  crypto.getRandomValues(random);
+  const core = Array.from(random, n => alphabet[n % alphabet.length]).join('');
+  return `Tmp#${core}9a`;
+}
+
+function validateDayPayload(d) {
+  if (!d.uid) throw new Error('Sessione non valida. Effettua di nuovo il login.');
+  if (!validateISODate(d.date)) throw new Error('Inserisci una data valida.');
+  if (d.cash < 0 || d.card < 0) throw new Error('Cash e Carta non possono essere negativi.');
+  if (d.cash > MAX_TIP_AMOUNT || d.card > MAX_TIP_AMOUNT) throw new Error('Valore mance troppo alto.');
+  if (!Array.isArray(d.hours) || !d.hours.length) throw new Error('Inserisci almeno un\'ora.');
+  if (d.hours.some(h => !Number.isFinite(h) || h < 0 || h > 24)) throw new Error('Le ore devono essere comprese tra 0 e 24.');
+  if (d.total <= 0) throw new Error('Inserisci Cash o Carta.');
+  if (d.totalHours <= 0) throw new Error('Inserisci almeno un\'ora.');
 }
 
 function withTimeout(promise, timeoutMs = 15000, label = 'Operazione') {
@@ -330,7 +410,7 @@ function rtdbUser(uid) {
 
 async function writeUserToRTDB(uid, data) {
   const active = data.active !== false && data.enabled !== false;
-  const role = String(data.role || '').toLowerCase() || 'waiter';
+  const role = normalizeStoredRole(data.role || 'waiter');
   const payload = {
     email: String(data.email || ''),
     name: normalizeName(data.name || ''),
@@ -649,7 +729,8 @@ async function logout() {
     await signOut(auth);
   } catch (e) {
     console.error('Errore logout:', e);
-    return alert('Errore logout: ' + (e?.message || 'Logout non riuscito'));
+    notify('Errore logout: ' + (e?.message || 'Logout non riuscito'), 'error');
+    return;
   }
   localStorage.removeItem(SESSION_KEY);
   currentUser = '';
@@ -709,7 +790,7 @@ async function loadEmployees() {
     return;
   }
   try {
-    // Serve la lista completa dipendenti anche ai waiter per mostrare la tabella turni completa.
+    // Con regole ristrette, la lista completa è disponibile solo ad admin/manager.
     const snap = await getDocs(employeeCollection());
     employeesData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
@@ -818,12 +899,13 @@ function renderUsersTable() {
     return;
   }
   usersData.forEach(u => {
+    const normalizedRole = normalizeStoredRole(u.role);
     const active = u.active !== false;
     const statusClass = active ? 'status-enabled' : 'status-disabled';
     const statusText = active ? 'Attivo' : 'Disattivato';
     const displayName = esc(normalizeName((u.name || '') + (u.surname ? ' ' + u.surname : '')) || u.email || '-');
     const roleOptions = USER_ROLES_ADMIN.map(r =>
-      `<option value="${r}"${u.role === r ? ' selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`
+      `<option value="${r}"${normalizedRole === r ? ' selected' : ''}>${r.charAt(0).toUpperCase() + r.slice(1)}</option>`
     ).join('');
     html += `<tr>
       <td>${displayName}</td>
@@ -844,9 +926,11 @@ function validateEmployeePayload({ name, surname, email, phone, restaurantRole, 
   const normalizedEmail = normalizeEmail(email);
   const normalizedAppRole = normalizeAppRole(appRole);
   const normalizedRestaurantRole = normalizeRestaurantRole(restaurantRole || '');
-  const normalizedPhone = String(phone || '').trim();
+  const normalizedPhone = normalizePhone(phone || '');
   if (!normalizedName) throw new Error('Nome obbligatorio.');
   if (!normalizedEmail) throw new Error('Email obbligatoria.');
+  if (!isValidEmailFormat(normalizedEmail)) throw new Error('Formato email non valido.');
+  if (!isValidPhoneFormat(normalizedPhone)) throw new Error('Formato telefono non valido.');
   if (!normalizedAppRole) throw new Error('Ruolo App obbligatorio.');
   const normalizedPassword = String(password || '');
   if (requirePassword && normalizedPassword.length < 8) throw new Error('Password minima di 8 caratteri.');
@@ -871,7 +955,7 @@ async function checkEmailUniqueness(email, ignoreId = '') {
 
 async function upsertEmployeeProfile(uid, data, isCreate = false) {
   const appRole = data.appRole ? normalizeAppRole(data.appRole) : normalizeAppRole(data.role || '');
-  const legacyRole = appRoleToLegacyRole(appRole || data.role || 'Waiter');
+  const normalizedStoredRole = normalizeStoredRole(appRole || data.role || 'waiter');
   const active = data.active !== false && data.enabled !== false;
   const status = getEmployeeStatusLabel(active);
   const payload = {
@@ -881,7 +965,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     phone: data.phone || '',
     restaurantRole: data.restaurantRole || '',
     appRole: appRole || '',
-    role: legacyRole,
+    role: normalizedStoredRole,
     status,
     enabled: active,
     active,
@@ -898,7 +982,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     phone: data.phone || '',
     restaurantRole: data.restaurantRole || '',
     appRole: appRole || '',
-    role: legacyRole.toLowerCase(),
+    role: normalizedStoredRole,
     status,
     active,
     updatedAt: serverTimestamp()
@@ -915,13 +999,13 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
   await writeUserToRTDB(uid, {
     name: data.name,
     email: data.email,
-    role: legacyRole.toLowerCase(),
+    role: normalizedStoredRole,
     active
   });
 }
 
 async function createEmployee() {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   let data;
   try {
     data = validateEmployeePayload({
@@ -931,52 +1015,59 @@ async function createEmployee() {
       phone: $('employeePhone').value,
       restaurantRole: $('employeeRestaurantRole').value,
       appRole: $('employeeAppRole').value,
-      password: DEFAULT_EMPLOYEE_PASSWORD,
-      requirePassword: true
+      password: '',
+      requirePassword: false
     });
   } catch (e) {
-    return alert(e.message);
+    notify(e.message, 'error');
+    return;
   }
 
   let uid = '';
+  const temporaryPassword = generateTemporaryEmployeePassword();
   const nextActive = $('employeeStatus').value === 'true';
   try {
     const isUnique = await checkEmailUniqueness(data.normalizedEmail);
-    if (!isUnique) return alert('Email già associata a un dipendente.');
+    if (!isUnique) { notify('Email già associata a un dipendente.', 'error'); return; }
   } catch (e) {
     console.error('Errore verifica email dipendente:', e);
-    return alert('Errore verifica email: ' + e.message);
+    notify('Errore verifica email: ' + e.message, 'error');
+    return;
   }
   try {
     const fnResult = await callEmployeeAdminFunction('createEmployeeAuthUser', {
       email: data.normalizedEmail,
-      password: DEFAULT_EMPLOYEE_PASSWORD,
+      password: temporaryPassword,
       name: data.normalizedName,
       role: appRoleToLegacyRole(data.normalizedAppRole)
     });
     uid = fnResult.data?.uid ? String(fnResult.data.uid) : '';
   } catch (e) {
     if (isEmailAlreadyRegisteredError(e)) {
-      return alert(getDuplicateEmployeeEmailMessage(data.normalizedEmail));
+      notify(getDuplicateEmployeeEmailMessage(data.normalizedEmail), 'error');
+      return;
     }
     if (isMissingAdminFunctionError(e)) {
       console.warn('Callable createEmployeeAuthUser non disponibile, uso fallback client-side.', e);
       uid = '';
     } else {
       console.error('Errore creazione account Auth tramite Cloud Function:', e);
-      return alert('Errore creazione account: ' + getErrorDetails(e));
+      notify('Errore creazione account: ' + getErrorDetails(e), 'error');
+      return;
     }
   }
 
   if (!uid) {
     try {
-      uid = await createAuthUserWithSecondarySession(data.normalizedEmail, DEFAULT_EMPLOYEE_PASSWORD);
+      uid = await createAuthUserWithSecondarySession(data.normalizedEmail, temporaryPassword);
     } catch (e) {
       console.error('Errore creazione utente auth:', e);
       if (isEmailAlreadyRegisteredError(e)) {
-        return alert(getDuplicateEmployeeEmailMessage(data.normalizedEmail));
+        notify(getDuplicateEmployeeEmailMessage(data.normalizedEmail), 'error');
+        return;
       }
-      return alert('Errore creazione utente: ' + getErrorDetails(e));
+      notify('Errore creazione utente: ' + getErrorDetails(e), 'error');
+      return;
     }
   }
 
@@ -993,17 +1084,23 @@ async function createEmployee() {
     await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
     await loadEmployees();
-    alert('Dipendente creato con successo. Invita il dipendente a cambiare la password dopo il primo accesso.');
+    try {
+      await sendPasswordResetEmail(auth, data.normalizedEmail);
+      notify(`Dipendente creato. Email di attivazione/reset inviata a ${data.normalizedEmail}.`, 'info');
+    } catch (resetErr) {
+      console.warn('Dipendente creato ma invio email reset non riuscito:', resetErr);
+      notify(`Dipendente creato, ma non è stato possibile inviare l'email di reset a ${data.normalizedEmail}.`, 'error');
+    }
   } catch (e) {
     console.error('Errore salvataggio profilo dipendente:', e);
-    alert('Errore salvataggio profilo: ' + e.message);
+    notify('Errore salvataggio profilo: ' + e.message, 'error');
   }
 }
 
 async function saveEmployeeModal() {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   const employee = employeesData.find(emp => emp.id === editingEmployeeId);
-  if (!employee) return alert('Dipendente non trovato.');
+  if (!employee) { notify('Dipendente non trovato.', 'error'); return; }
 
   let data;
   try {
@@ -1019,17 +1116,19 @@ async function saveEmployeeModal() {
       ignoreId: editingEmployeeId
     });
   } catch (e) {
-    return alert(e.message);
+    notify(e.message, 'error');
+    return;
   }
 
   const nextActive = $('modalEmpActive').value === 'true';
   const wantsAuthUpdate = data.normalizedEmail !== normalizeEmail(employee.email) || data.normalizedPassword.length >= 8;
   try {
     const isUnique = await checkEmailUniqueness(data.normalizedEmail, employee.id);
-    if (!isUnique) return alert('Email già associata a un dipendente.');
+    if (!isUnique) { notify('Email già associata a un dipendente.', 'error'); return; }
   } catch (e) {
     console.error('Errore verifica email dipendente:', e);
-    return alert('Errore verifica email: ' + e.message);
+    notify('Errore verifica email: ' + e.message, 'error');
+    return;
   }
 
   if (wantsAuthUpdate) {
@@ -1041,7 +1140,8 @@ async function saveEmployeeModal() {
       });
     } catch (e) {
       console.error('Errore aggiornamento auth dipendente:', e);
-      return alert('Aggiornamento email/password richiede Cloud Function `updateEmployeeAuthUser` configurata.');
+      notify('Aggiornamento email/password richiede Cloud Function `updateEmployeeAuthUser` configurata.', 'error');
+      return;
     }
   }
 
@@ -1060,14 +1160,14 @@ async function saveEmployeeModal() {
     await loadEmployees();
     syncEmployeeTabVisibility();
     if (employee.id === currentUserUid && !nextActive) {
-      alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
+      notify('Il tuo account è stato disabilitato. Verrai disconnesso.', 'error');
       await logout();
     } else {
-      alert('Dipendente aggiornato.');
+      notify('Dipendente aggiornato.', 'info');
     }
   } catch (e) {
     console.error('Errore aggiornamento dipendente:', e);
-    alert('Errore aggiornamento: ' + e.message);
+    notify('Errore aggiornamento: ' + e.message, 'error');
   }
 }
 
@@ -1093,7 +1193,7 @@ function closeEmployeeModal() {
 }
 
 async function deleteEmployeeFromModal() {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   const id = editingEmployeeId;
   const employee = employeesData.find(emp => emp.id === id);
   if (!employee) return;
@@ -1102,7 +1202,8 @@ async function deleteEmployeeFromModal() {
     await callEmployeeAdminFunction('deleteEmployeeAuthUser', { uid: employee.id });
   } catch (e) {
     console.error('Errore cancellazione auth dipendente:', e);
-    return alert('Eliminazione account Auth richiede Cloud Function `deleteEmployeeAuthUser` configurata.');
+    notify('Eliminazione account Auth richiede Cloud Function `deleteEmployeeAuthUser` configurata.', 'error');
+    return;
   }
   try {
     await deleteDoc(employeeDoc(employee.id));
@@ -1117,37 +1218,25 @@ async function deleteEmployeeFromModal() {
     await loadEmployees();
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
-    alert('Errore cancellazione profilo: ' + e.message);
+    notify('Errore cancellazione profilo: ' + e.message, 'error');
   }
 }
 
 async function resetEmployeePassword(id) {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   const employee = employeesData.find(emp => emp.id === id);
-  if (!employee) return alert('Dipendente non trovato.');
+  if (!employee) { notify('Dipendente non trovato.', 'error'); return; }
   const email = normalizeEmail(employee.email);
-  if (!email) return alert('Il dipendente non ha un indirizzo email valido.');
+  if (!email || !isValidEmailFormat(email)) { notify('Il dipendente non ha un indirizzo email valido.', 'error'); return; }
   if (!confirm(`Reimpostare la password di ${employee.name || email}?`)) return;
-
-  try {
-    await callEmployeeAdminFunction('updateEmployeeAuthUser', {
-      uid: employee.id,
-      password: DEFAULT_EMPLOYEE_PASSWORD
-    });
-    await writeLog(`employee_password_reset:${employee.id}:default`);
-    alert('Password reimpostata con successo.');
-    return;
-  } catch (e) {
-    console.warn('Reset password diretto non disponibile, provo email reset Firebase.', e);
-  }
 
   try {
     await sendPasswordResetEmail(auth, email);
     await writeLog(`employee_password_reset:${employee.id}:email`);
-    alert(`Email di reset inviata a ${email}.`);
+    notify(`Email di reset inviata a ${email}.`, 'info');
   } catch (e) {
     console.error('Errore invio email reset password:', e);
-    alert('Impossibile reimpostare la password: ' + getErrorDetails(e));
+    notify('Impossibile reimpostare la password: ' + getErrorDetails(e), 'error');
   }
 }
 
@@ -1156,7 +1245,7 @@ function editEmployee(id) {
 }
 
 async function toggleEmployeeEnabled(id) {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   const employee = employeesData.find(emp => emp.id === id);
   if (!employee) return;
   const nextActive = employee.active === false || employee.enabled === false;
@@ -1173,17 +1262,17 @@ async function toggleEmployeeEnabled(id) {
     await writeLog(`employee_${nextActive ? 'enable' : 'disable'}:${employee.id}`);
     await loadEmployees();
     if (employee.id === currentUserUid && !nextActive) {
-      alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
+      notify('Il tuo account è stato disabilitato. Verrai disconnesso.', 'error');
       await logout();
     }
   } catch (e) {
     console.error('Errore aggiornamento stato dipendente:', e);
-    alert('Errore aggiornamento stato: ' + e.message);
+    notify('Errore aggiornamento stato: ' + e.message, 'error');
   }
 }
 
 async function removeEmployee(id) {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   const employee = employeesData.find(emp => emp.id === id);
   if (!employee) return;
   if (!confirm(`Eliminare definitivamente ${employee.name || employee.email}?`)) return;
@@ -1191,7 +1280,8 @@ async function removeEmployee(id) {
     await callEmployeeAdminFunction('deleteEmployeeAuthUser', { uid: employee.id });
   } catch (e) {
     console.error('Errore cancellazione auth dipendente:', e);
-    return alert('Eliminazione account Auth richiede Cloud Function `deleteEmployeeAuthUser` configurata.');
+    notify('Eliminazione account Auth richiede Cloud Function `deleteEmployeeAuthUser` configurata.', 'error');
+    return;
   }
   try {
     await deleteDoc(employeeDoc(employee.id));
@@ -1207,19 +1297,19 @@ async function removeEmployee(id) {
     await loadEmployees();
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
-    alert('Errore cancellazione profilo: ' + e.message);
+    notify('Errore cancellazione profilo: ' + e.message, 'error');
   }
 }
 
 async function updateUserRole(uid, role) {
-  if (!isAdmin()) return alert('Solo admin');
-  if (!USER_ROLES_ALL.includes(role)) return alert('Ruolo non valido.');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
+  if (!USER_ROLES_ALL.includes(role)) { notify('Ruolo non valido.', 'error'); return; }
   try {
     await setDoc(userDoc(uid), { role, updatedAt: serverTimestamp() }, { merge: true });
     // Sync to /employees/ for Firestore rules compatibility using shared helpers
-    const legacyRole = appRoleToLegacyRole(role);
-    const appRoleSync = normalizeAppRole(role);
-    await setDoc(employeeDoc(uid), { role: legacyRole, appRole: appRoleSync, updatedAt: serverTimestamp() }, { merge: true });
+    const roleStorage = normalizeStoredRole(role);
+    const appRoleSync = roleToAppRoleLabel(roleStorage);
+    await setDoc(employeeDoc(uid), { role: roleStorage, appRole: appRoleSync, updatedAt: serverTimestamp() }, { merge: true });
     // Sync to Realtime Database
     try {
       await rtdbUpdate(rtdbUser(uid), { role });
@@ -1230,13 +1320,13 @@ async function updateUserRole(uid, role) {
     await loadUsersForAdmin();
   } catch (e) {
     console.error('Errore aggiornamento ruolo utente:', e);
-    alert('Errore aggiornamento ruolo: ' + e.message);
+    notify('Errore aggiornamento ruolo: ' + e.message, 'error');
     await loadUsersForAdmin();
   }
 }
 
 async function toggleUserActive(uid) {
-  if (!isAdmin()) return alert('Solo admin');
+  if (!isAdmin()) { notify('Solo admin', 'error'); return; }
   const user = usersData.find(u => u.id === uid);
   if (!user) return;
   const nextActive = user.active === false;
@@ -1252,12 +1342,12 @@ async function toggleUserActive(uid) {
     await writeLog(`user_${nextActive ? 'enable' : 'disable'}:${uid}`);
     await loadUsersForAdmin();
     if (uid === currentUserUid && !nextActive) {
-      alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
+      notify('Il tuo account è stato disabilitato. Verrai disconnesso.', 'error');
       await logout();
     }
   } catch (e) {
     console.error('Errore aggiornamento stato utente:', e);
-    alert('Errore aggiornamento stato: ' + e.message);
+    notify('Errore aggiornamento stato: ' + e.message, 'error');
   }
 }
 
@@ -1384,8 +1474,8 @@ async function loadCurrentUserProfile(user) {
         return false;
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
-      currentUserRole = normalizeRole(profile.role) || 'Waiter';
-      const resolvedRole = String(currentUserRole || 'waiter').toLowerCase();
+      currentUserRole = normalizeStoredRole(profile.appRole || profile.role || 'waiter');
+      const resolvedRole = normalizeStoredRole(currentUserRole);
       const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
       try {
         await writeUserToRTDB(user.uid, {
@@ -1743,8 +1833,8 @@ async function loadAttendanceData() {
 }
 
 async function saveAttendance() {
-  if (!canManageAttendance()) return alert('Solo admin e manager possono modificare entrata e uscita.');
-  if (!attendanceDate) return alert('Seleziona una data.');
+  if (!canManageAttendance()) { setAttendanceStatus('Solo admin e manager possono modificare entrata e uscita.', 'error'); return; }
+  if (!attendanceDate) { setAttendanceStatus('Seleziona una data.', 'error'); return; }
   const rows = [...document.querySelectorAll('#attendanceTable tr[data-attendance-uid]')];
   if (!rows.length) return;
   try {
@@ -1780,7 +1870,7 @@ async function saveAttendance() {
     setAttendanceStatus('Entrate e uscite salvate.', 'info');
   } catch (e) {
     console.error('Errore salvataggio entrate e uscite:', e);
-    alert('Errore salvataggio entrate e uscite: ' + e.message);
+    setAttendanceStatus('Errore salvataggio entrate e uscite: ' + e.message, 'error');
   }
 }
 
@@ -1790,7 +1880,7 @@ function maybeShowTodayShiftPopup() {
   if (!shift) return;
   todayShiftPopupShown = true;
   const text = getShiftDisplayText(shift);
-  alert(`Il tuo turno di oggi: ${text || 'Nessun turno assegnato'}`);
+  setShiftStatus(`Il tuo turno di oggi: ${text || 'Nessun turno assegnato'}`, 'info');
 }
 
 function renderShiftTable(tableId, allowEdit) {
@@ -1923,14 +2013,14 @@ function openShiftEditor(uid = '', date = '') {
 }
 
 async function saveShift() {
-  if (!canManageShifts()) return alert('Accesso consentito solo ad Admin/Manager/Responsible.');
+  if (!canManageShifts()) { setShiftStatus('Accesso consentito solo ad Admin/Manager/Responsible.', 'error'); return; }
   const uid = $('shiftEmployee').value;
   const date = $('shiftDate').value;
   const selectedEmployee = getShiftEmployees().find(emp => emp.id === uid);
   let shiftType = normalizeShiftType($('shiftType').value) || 'morning';
   const isRestDay = $('shiftRestDay').checked || shiftType === 'rest';
-  if (!uid) return alert('Seleziona un dipendente.');
-  if (!date) return alert('Seleziona una data.');
+  if (!uid) { setShiftStatus('Seleziona un dipendente.', 'error'); return; }
+  if (!date) { setShiftStatus('Seleziona una data.', 'error'); return; }
   const startTime = isRestDay ? null : String($('shiftStartTime').value || '').trim();
   const endTime = isRestDay ? null : String($('shiftEndTime').value || '').trim();
   let shiftText = String($('shiftText').value || '').trim();
@@ -1969,16 +2059,18 @@ async function saveShift() {
       await writeLog(`shift_create:${uid}:${date}`);
     }
     clearShiftEditor();
+    setShiftStatus('Turno salvato.', 'info');
   } catch (e) {
     console.error('Errore salvataggio turno:', e);
-    alert('Errore salvataggio turno: ' + e.message);
+    setShiftStatus('Errore salvataggio turno: ' + e.message, 'error');
   }
 }
 
 async function deleteShift() {
   if (!canManageShifts()) {
     console.warn('Solo Admin/Manager/Responsible possono eliminare i turni.');
-    return alert('Questa azione richiede permessi Admin/Manager/Responsible.');
+    notify('Questa azione richiede permessi Admin/Manager/Responsible.', 'error');
+    return;
   }
   if (!editingShiftId) return;
   if (!confirm('Eliminare questo turno?')) return;
@@ -1988,7 +2080,7 @@ async function deleteShift() {
     clearShiftEditor();
   } catch (e) {
     console.error('Errore eliminazione turno:', e);
-    alert('Errore eliminazione turno: ' + e.message);
+    notify('Errore eliminazione turno: ' + e.message, 'error');
   }
 }
 
@@ -2136,17 +2228,17 @@ function init() {
 function tab(id, b) {
   if (id === 'employeeManagement' && !isAdmin()) {
     console.warn('Solo admin possono vedere i dipendenti.');
-    alert('Non hai i permessi per accedere a questa sezione.');
+    notify('Non hai i permessi per accedere a questa sezione.', 'error');
     return;
   }
   if (id === 'settings' && !isAdmin()) {
     console.warn('Accesso alle impostazioni riservato agli admin.');
-    alert('Non hai i permessi per accedere a questa sezione.');
+    notify('Non hai i permessi per accedere a questa sezione.', 'error');
     return;
   }
   if (id === 'settings') loadUsersForAdmin();
   if (id === 'myShifts' && canManageShifts()) {
-    alert('Questa vista è disponibile per i dipendenti.');
+    notify('Questa vista è disponibile per i dipendenti.', 'info');
     return;
   }
   document.querySelectorAll('.page').forEach(p => {
@@ -2189,9 +2281,9 @@ function split(r) {
 
 // GET FORM DATA
 function data() {
-  let cash = +$('cash').value || 0;
-  let card = +$('card').value || 0;
-  let h = [...document.querySelectorAll('.hour')].map(x => +x.value || 0);
+  let cash = sanitizeMoneyInput($('cash').value);
+  let card = sanitizeMoneyInput($('card').value);
+  let h = [...document.querySelectorAll('.hour')].map(x => sanitizeHourInput(x.value));
   let th = h.reduce((a, b) => a + b, 0);
   let p = state.kitchenPercent / 100;
   let salaCash = cash * (1 - p);
@@ -2254,9 +2346,9 @@ function hours() {
 
 // UPDATE HOUR CALCULATIONS
 function updateHourCalculations() {
-  let cash = +$('cash').value || 0;
-  let card = +$('card').value || 0;
-  let h = [...document.querySelectorAll('.hour')].map(x => +x.value || 0);
+  let cash = sanitizeMoneyInput($('cash').value);
+  let card = sanitizeMoneyInput($('card').value);
+  let h = [...document.querySelectorAll('.hour')].map(x => sanitizeHourInput(x.value));
   let totalHours = h.reduce((a, b) => a + b, 0);
   
   let p = state.kitchenPercent / 100;
@@ -2293,11 +2385,13 @@ function calc() {
 
 // SAVE DAY
 async function saveDay() {
-  if (!currentUserUid) return alert('Sessione non valida. Effettua di nuovo il login.');
   let d = data();
-  if (!d.date) return alert('Inserisci la data.');
-  if (d.total <= 0) return alert('Inserisci Cash o Carta.');
-  if (d.totalHours <= 0) return alert('Inserisci almeno un\'ora.');
+  try {
+    validateDayPayload(d);
+  } catch (e) {
+    notify(e.message, 'error');
+    return;
+  }
   
   let existing = state.history.find(x => x.date === d.date);
   if (existing) {
@@ -2307,22 +2401,22 @@ async function saveDay() {
   
   try {
     await setDoc(doc(db, 'restaurants', 'angies', 'days', d.date), d);
-    alert('Giornata salvata!');
+    notify('Giornata salvata!', 'info');
     clear();
     render();
   } catch(e) {
     console.error('Errore salvataggio:', e);
-    alert('Errore salvataggio: ' + e.message);
+    notify('Errore salvataggio: ' + e.message, 'error');
   }
 }
 
 // SHARE ON WHATSAPP
 function shareWhatsApp() {
   let d = data();
-  if (!d.date) return alert('Seleziona una data.');
-  if (d.total <= 0) return alert('Nessun dato da condividere.');
-  if (d.totalHours <= 0) {
-    alert("Inserisci almeno un'ora.");
+  try {
+    validateDayPayload(d);
+  } catch (e) {
+    notify(e.message, 'error');
     return;
   }
   
@@ -2420,7 +2514,7 @@ window.delDay = async i => {
     render();
   } catch(e) {
     console.error('Errore cancellazione:', e);
-    alert('Errore cancellazione: ' + e.message);
+    notify('Errore cancellazione: ' + e.message, 'error');
   }
 };
 
@@ -2491,11 +2585,11 @@ async function saveSettings() {
   state.employees = [...document.querySelectorAll('.emp')].map(x => x.value.trim()).filter(Boolean);
   try {
     await setDoc(doc(db, 'restaurants', 'angies', 'settings', 'main'), state);
-    alert('Impostazioni salvate!');
+    notify('Impostazioni salvate!', 'info');
     render();
   } catch(e) {
     console.error('Errore: ', e);
-    alert('Errore: ' + e.message);
+    notify('Errore: ' + e.message, 'error');
   }
 }
 
@@ -2505,10 +2599,16 @@ function chatListen() {
   let q = query(collection(db, 'restaurants', 'angies', 'chat'), orderBy('createdAt', 'asc'));
   unsub = onSnapshot(q, snap => {
     let box = $('chatBox');
-    box.innerHTML = '';
+    box.textContent = '';
     snap.forEach(d => {
       let msg = d.data();
-      box.innerHTML += `<div class="msg"><strong>${esc(msg.name)}</strong>: ${esc(msg.text)}</div>`;
+      const msgNode = document.createElement('div');
+      msgNode.className = 'msg';
+      const strong = document.createElement('strong');
+      strong.textContent = String(msg.name || '');
+      msgNode.appendChild(strong);
+      msgNode.append(': ' + String(msg.text || ''));
+      box.appendChild(msgNode);
     });
     box.scrollTop = box.scrollHeight;
   }, err => {
@@ -2520,7 +2620,7 @@ function chatListen() {
 async function sendMsg() {
   let text = $('msg').value.trim();
   if (!text) return;
-  if (!currentUser) return alert('Effettua il login');
+  if (!currentUser) { notify('Effettua il login', 'error'); return; }
   try {
     await addDoc(collection(db, 'restaurants', 'angies', 'chat'), {
       text: text,
@@ -2530,7 +2630,7 @@ async function sendMsg() {
     $('msg').value = '';
   } catch(e) {
     console.error('Errore invio messaggio:', e);
-    alert('Errore: ' + e.message);
+    notify('Errore: ' + e.message, 'error');
   }
 }
 
