@@ -39,6 +39,9 @@ const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
 const MINUTES_PER_DAY = 24 * 60;
+const PROFILE_LOAD_TIMEOUT_MS = 15000;
+const PRIMARY_LOAD_TIMEOUT_MS = 15000;
+const SECONDARY_LOAD_TIMEOUT_MS = 12000;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -2407,7 +2410,7 @@ window.addEventListener('load', async () => {
     try {
       ensureFirebaseServicesReady();
       if (user) {
-        const loadedProfile = await withTimeout(loadCurrentUserProfile(user), 15000, 'Caricamento profilo');
+        const loadedProfile = await withTimeout(loadCurrentUserProfile(user), PROFILE_LOAD_TIMEOUT_MS, 'Caricamento profilo');
         if (!loadedProfile) {
           hasLoadedSessionData = false;
           localStorage.removeItem(SESSION_KEY);
@@ -2452,7 +2455,7 @@ window.addEventListener('load', async () => {
         const startupTasks = [];
         if (!hasLoadedSessionData) {
           startupTasks.push(
-            withTimeout(load(), 15000, 'Caricamento dati principali')
+            withTimeout(load(), PRIMARY_LOAD_TIMEOUT_MS, 'Caricamento dati principali')
               .then(() => { hasLoadedSessionData = true; })
               .catch(err => {
                 hasLoadedSessionData = false;
@@ -2460,8 +2463,8 @@ window.addEventListener('load', async () => {
               })
           );
         }
-        startupTasks.push(withTimeout(loadEmployees(), 12000, 'Caricamento dipendenti'));
-        startupTasks.push(withTimeout(loadAttendanceData(), 12000, 'Caricamento entrata e uscita'));
+        startupTasks.push(withTimeout(loadEmployees(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento dipendenti'));
+        startupTasks.push(withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita'));
         const startupResults = await Promise.allSettled(startupTasks);
         const startupErrors = startupResults
           .filter(result => result.status === 'rejected')
