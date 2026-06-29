@@ -37,7 +37,7 @@
       <button id="myShiftsTabBtn" data-tab="myShifts">I miei turni</button>
       <button data-tab="chat">Chat</button>
       <button id="settingsTabBtn" data-tab="settings">Impostazioni</button>
-      <button id="employeeTabBtn" class="hidden" data-tab="employeeManagement">Employee Management</button>
+      <button id="employeeTabBtn" class="hidden" data-tab="employeeManagement">Dipendenti</button>
     </nav>
 
     <main>
@@ -124,25 +124,33 @@
       </section>
 
       <section id="employeeManagement" class="page">
-        <h2>Employee Management</h2>
-        <div class="panel grid">
+        <h2>Dipendenti</h2>
+        <div id="employeeCreateForm" class="panel grid">
           <label>Nome<input id="employeeName" type="text" placeholder="Nome dipendente"></label>
+          <label>Cognome<input id="employeeSurname" type="text" placeholder="Cognome dipendente"></label>
           <label>Email<input id="employeeEmail" type="email" placeholder="email@azienda.com"></label>
           <label>Password<input id="employeePassword" type="password" autocomplete="new-password" placeholder="Minimo 8 caratteri"></label>
-          <label>Ruolo
-            <select id="employeeRole">
-              <option value="">Seleziona ruolo</option>
+          <label>Posizione nel ristorante
+            <select id="employeeRestaurantRole">
+              <option value="">Seleziona posizione</option>
+              <option value="Direttore">Direttore</option>
+              <option value="Manager">Manager</option>
+              <option value="Responsabile">Responsabile</option>
+              <option value="Cameriere">Cameriere</option>
+            </select>
+          </label>
+          <label>Ruolo App
+            <select id="employeeAppRole">
+              <option value="">Seleziona ruolo app</option>
               <option value="Admin">Admin</option>
               <option value="Manager">Manager</option>
-              <option value="Responsible">Responsible</option>
+              <option value="Responsabile">Responsabile</option>
               <option value="Waiter">Waiter</option>
-              <option value="Kitchen">Kitchen</option>
             </select>
           </label>
         </div>
-        <div class="actions">
+        <div id="employeeCreateActions" class="actions">
           <button id="employeeSaveBtn">Crea dipendente</button>
-          <button id="employeeCancelBtn" class="clear hidden">Annulla modifica</button>
         </div>
         <div class="panel">
           <table id="employeeList"></table>
@@ -215,6 +223,47 @@
         <div id="myShiftsMobileList" class="shift-mobile-list"></div>
       </section>
     </main>
+
+    <div id="employeeModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="modalEmpTitle">
+      <div class="modal-card">
+        <h3 id="modalEmpTitle">Modifica dipendente</h3>
+        <div class="panel grid">
+          <label>Nome<input id="modalEmpName" type="text" placeholder="Nome"></label>
+          <label>Cognome<input id="modalEmpSurname" type="text" placeholder="Cognome"></label>
+          <label>Email<input id="modalEmpEmail" type="email" placeholder="email@azienda.com"></label>
+          <label>Nuova password (opzionale)<input id="modalEmpPassword" type="password" autocomplete="new-password" placeholder="Lascia vuoto per non cambiare"></label>
+          <label>Posizione nel ristorante
+            <select id="modalEmpRestaurantRole">
+              <option value="">Seleziona posizione</option>
+              <option value="Direttore">Direttore</option>
+              <option value="Manager">Manager</option>
+              <option value="Responsabile">Responsabile</option>
+              <option value="Cameriere">Cameriere</option>
+            </select>
+          </label>
+          <label>Ruolo App
+            <select id="modalEmpAppRole">
+              <option value="">Seleziona ruolo app</option>
+              <option value="Admin">Admin</option>
+              <option value="Manager">Manager</option>
+              <option value="Responsabile">Responsabile</option>
+              <option value="Waiter">Waiter</option>
+            </select>
+          </label>
+          <label>Stato
+            <select id="modalEmpActive">
+              <option value="true">Attivo</option>
+              <option value="false">Disattivato</option>
+            </select>
+          </label>
+        </div>
+        <div class="actions">
+          <button id="modalEmpSaveBtn">Salva</button>
+          <button id="modalEmpDeleteBtn" class="danger">Elimina</button>
+          <button id="modalEmpCloseBtn" class="clear">Annulla</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="app.js?v=17"></script>

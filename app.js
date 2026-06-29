@@ -26,6 +26,8 @@ let editingShiftId = '';
 let todayShiftPopupShown = false;
 const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
+const RESTAURANT_ROLES = ['Direttore', 'Manager', 'Responsabile', 'Cameriere'];
+const APP_ROLES = ['Admin', 'Manager', 'Responsabile', 'Waiter'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
@@ -38,7 +40,7 @@ const normalizeEmail = s => String(s || '').trim().toLowerCase();
 function getCurrentUserRole() { return currentUserRole; }
 const isAdmin = () => currentUserRole.toLowerCase() === 'admin';
 const isManager = () => currentUserRole.toLowerCase() === 'manager';
-const isResponsible = () => currentUserRole.toLowerCase() === 'responsible';
+const isResponsible = () => ['responsible', 'responsabile'].includes(currentUserRole.toLowerCase());
 const isWaiter = () => currentUserRole.toLowerCase() === 'waiter';
 const canViewGlobalTipsData = () => isAdmin() || isManager() || isResponsible();
 const canManageShifts = () => isAdmin() || isManager() || isResponsible();
@@ -96,6 +98,25 @@ function normalizeRole(role) {
 function normalizeShiftType(shiftType) {
   const cleaned = String(shiftType || '').trim().toLowerCase();
   return SHIFT_TYPES.includes(cleaned) ? cleaned : '';
+}
+
+function normalizeAppRole(role) {
+  const cleaned = String(role || '').trim();
+  const match = APP_ROLES.find(r => r.toLowerCase() === cleaned.toLowerCase());
+  if (match) return match;
+  if (cleaned.toLowerCase() === 'responsible') return 'Responsabile';
+  return '';
+}
+
+function normalizeRestaurantRole(role) {
+  const cleaned = String(role || '').trim();
+  return RESTAURANT_ROLES.find(r => r.toLowerCase() === cleaned.toLowerCase()) || '';
+}
+
+function appRoleToLegacyRole(appRole) {
+  const lower = String(appRole || '').toLowerCase();
+  if (lower === 'responsabile') return 'Responsible';
+  return EMPLOYEE_ROLES.find(r => r.toLowerCase() === lower) || 'Waiter';
 }
 
 function deriveNameFromEmail(email) {
@@ -286,10 +307,16 @@ function showApp() {
 function syncEmployeeTabVisibility() {
   const tabBtn = $('employeeTabBtn');
   if (!tabBtn) return;
-  tabBtn.classList.toggle('hidden', !isAdmin());
-  if (!isAdmin() && $('employeeManagement').classList.contains('active')) {
+  const canView = isAdmin() || isManager();
+  tabBtn.classList.toggle('hidden', !canView);
+  if (!canView && $('employeeManagement').classList.contains('active')) {
     tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
+  // Show/hide the create form - only Admins can create employees
+  const createForm = $('employeeCreateForm');
+  const createActions = $('employeeCreateActions');
+  if (createForm) createForm.classList.toggle('hidden', !isAdmin());
+  if (createActions) createActions.classList.toggle('hidden', !isAdmin());
 }
 
 function syncShiftTabVisibility() {
@@ -417,58 +444,61 @@ async function loadEmployees() {
 }
 
 function clearEmployeeForm() {
-  editingEmployeeId = '';
   $('employeeName').value = '';
+  $('employeeSurname').value = '';
   $('employeeEmail').value = '';
   $('employeePassword').value = '';
-  $('employeeRole').value = '';
+  $('employeeRestaurantRole').value = '';
+  $('employeeAppRole').value = '';
   $('employeeSaveBtn').textContent = 'Crea dipendente';
-  $('employeeCancelBtn').classList.add('hidden');
 }
 
 function renderEmployeesTable() {
   const table = $('employeeList');
   if (!table) return;
-  if (!isAdmin()) {
-    table.innerHTML = '<tr><td>Accesso consentito solo agli admin.</td></tr>';
+  if (!isAdmin() && !isManager()) {
+    table.innerHTML = '<tr><td>Accesso consentito solo agli admin e manager.</td></tr>';
     return;
   }
-  let html = '<tr><th>Nome</th><th>Email</th><th>Ruolo</th><th>Stato</th><th>Azioni</th></tr>';
+  let html = '<tr><th>Nome</th><th>Email</th><th>Posizione</th><th>Ruolo App</th><th>Stato</th><th>Azioni</th></tr>';
   if (!employeesData.length) {
-    html += '<tr><td colspan="5">Nessun dipendente registrato.</td></tr>';
+    html += '<tr><td colspan="6">Nessun dipendente registrato.</td></tr>';
     table.innerHTML = html;
     return;
   }
   employeesData.forEach(emp => {
-    const enabled = emp.enabled !== false;
-    const statusClass = enabled ? 'status-enabled' : 'status-disabled';
-    const statusText = enabled ? 'Attivo' : 'Disabilitato';
+    const active = emp.active !== false && emp.enabled !== false;
+    const statusClass = active ? 'status-enabled' : 'status-disabled';
+    const statusText = active ? 'Attivo' : 'Disattivato';
+    const restaurantRole = esc(emp.restaurantRole || '-');
+    const appRole = esc(emp.appRole || normalizeAppRole(emp.role) || '-');
     html += `<tr>
-      <td>${esc(emp.name || '-')}</td>
+      <td>${esc((emp.name || '') + (emp.surname ? ' ' + emp.surname : '') || '-')}</td>
       <td>${esc(emp.email || '-')}</td>
-      <td>${esc(emp.role || '-')}</td>
+      <td>${restaurantRole}</td>
+      <td>${appRole}</td>
       <td><span class="status-badge ${statusClass}">${statusText}</span></td>
       <td class="table-actions">
-        <button data-employee-action="edit" data-employee-id="${esc(emp.id)}">Modifica</button>
-        <button data-employee-action="toggle" data-employee-id="${esc(emp.id)}">${enabled ? 'Disabilita' : 'Abilita'}</button>
-        <button class="danger" data-employee-action="delete" data-employee-id="${esc(emp.id)}">Elimina</button>
+        ${isAdmin() ? `<button data-employee-action="edit" data-employee-id="${esc(emp.id)}">Modifica</button>` : ''}
       </td>
     </tr>`;
   });
   table.innerHTML = html;
 }
 
-function validateEmployeePayload({ name, email, role, password, requirePassword = false, ignoreId = '' }) {
+function validateEmployeePayload({ name, surname, email, restaurantRole, appRole, password, requirePassword = false, ignoreId = '' }) {
   const normalizedName = normalizeName(name);
+  const normalizedSurname = normalizeName(surname || '');
   const normalizedEmail = normalizeEmail(email);
-  const normalizedRole = normalizeRole(role);
+  const normalizedAppRole = normalizeAppRole(appRole);
+  const normalizedRestaurantRole = normalizeRestaurantRole(restaurantRole || '');
   if (!normalizedName) throw new Error('Nome obbligatorio.');
   if (!normalizedEmail) throw new Error('Email obbligatoria.');
-  if (!normalizedRole) throw new Error('Ruolo obbligatorio.');
+  if (!normalizedAppRole) throw new Error('Ruolo App obbligatorio.');
   const normalizedPassword = String(password || '');
   if (requirePassword && normalizedPassword.length < 8) throw new Error('Password minima di 8 caratteri.');
   if (!requirePassword && normalizedPassword && normalizedPassword.length < 8) throw new Error('Nuova password minima di 8 caratteri.');
-  return { normalizedName, normalizedEmail, normalizedRole, normalizedPassword };
+  return { normalizedName, normalizedSurname, normalizedEmail, normalizedAppRole, normalizedRestaurantRole, normalizedPassword };
 }
 
 async function checkEmailUniqueness(email, ignoreId = '') {
@@ -477,23 +507,32 @@ async function checkEmailUniqueness(email, ignoreId = '') {
 }
 
 async function upsertEmployeeProfile(uid, data, isCreate = false) {
+  const appRole = data.appRole ? normalizeAppRole(data.appRole) : normalizeAppRole(data.role || '');
+  const legacyRole = appRoleToLegacyRole(appRole || data.role || 'Waiter');
+  const active = data.active !== false && data.enabled !== false;
   const payload = {
     name: data.name,
+    surname: data.surname || '',
     email: data.email,
-    role: data.role,
-    enabled: data.enabled !== false,
+    restaurantRole: data.restaurantRole || '',
+    appRole: appRole || '',
+    role: legacyRole,
+    enabled: active,
+    active,
     updatedAt: serverTimestamp()
   };
   if (isCreate) payload.createdAt = serverTimestamp();
   await setDoc(employeeDoc(uid), payload, { merge: !isCreate });
 
   // Sync role to /users/ collection for RBAC
-  // /users/ uses lowercase roles ('admin','manager','responsible','waiter','kitchen') per the data model spec
   const userPayload = {
-    email: data.email,
     name: data.name,
-    role: String(data.role || '').toLowerCase(),
-    active: data.enabled !== false,
+    surname: data.surname || '',
+    email: data.email,
+    restaurantRole: data.restaurantRole || '',
+    appRole: appRole || '',
+    role: legacyRole.toLowerCase(),
+    active,
     updatedAt: serverTimestamp()
   };
   if (isCreate) userPayload.createdAt = serverTimestamp();
@@ -511,8 +550,10 @@ async function createEmployee() {
   try {
     data = validateEmployeePayload({
       name: $('employeeName').value,
+      surname: $('employeeSurname').value,
       email: $('employeeEmail').value,
-      role: $('employeeRole').value,
+      restaurantRole: $('employeeRestaurantRole').value,
+      appRole: $('employeeAppRole').value,
       password: $('employeePassword').value,
       requirePassword: true
     });
@@ -533,7 +574,7 @@ async function createEmployee() {
       email: data.normalizedEmail,
       password: data.normalizedPassword,
       name: data.normalizedName,
-      role: data.normalizedRole
+      role: appRoleToLegacyRole(data.normalizedAppRole)
     });
     uid = fnResult.data?.uid ? String(fnResult.data.uid) : '';
   } catch (e) {
@@ -553,11 +594,13 @@ async function createEmployee() {
   try {
     await upsertEmployeeProfile(uid, {
       name: data.normalizedName,
+      surname: data.normalizedSurname,
       email: data.normalizedEmail,
-      role: data.normalizedRole,
-      enabled: true
+      restaurantRole: data.normalizedRestaurantRole,
+      appRole: data.normalizedAppRole,
+      active: true
     }, true);
-    await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedRole}`);
+    await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
     await loadEmployees();
     alert('Dipendente creato con successo.');
@@ -567,7 +610,7 @@ async function createEmployee() {
   }
 }
 
-async function updateEmployee() {
+async function saveEmployeeModal() {
   if (!isAdmin()) return alert('Solo admin');
   const employee = employeesData.find(emp => emp.id === editingEmployeeId);
   if (!employee) return alert('Dipendente non trovato.');
@@ -575,10 +618,12 @@ async function updateEmployee() {
   let data;
   try {
     data = validateEmployeePayload({
-      name: $('employeeName').value,
-      email: $('employeeEmail').value,
-      role: $('employeeRole').value,
-      password: $('employeePassword').value,
+      name: $('modalEmpName').value,
+      surname: $('modalEmpSurname').value,
+      email: $('modalEmpEmail').value,
+      restaurantRole: $('modalEmpRestaurantRole').value,
+      appRole: $('modalEmpAppRole').value,
+      password: $('modalEmpPassword').value,
       requirePassword: false,
       ignoreId: editingEmployeeId
     });
@@ -586,6 +631,7 @@ async function updateEmployee() {
     return alert(e.message);
   }
 
+  const nextActive = $('modalEmpActive').value === 'true';
   const wantsAuthUpdate = data.normalizedEmail !== normalizeEmail(employee.email) || data.normalizedPassword.length >= 8;
   try {
     const isUnique = await checkEmailUniqueness(data.normalizedEmail, employee.id);
@@ -611,49 +657,97 @@ async function updateEmployee() {
   try {
     await upsertEmployeeProfile(employee.id, {
       name: data.normalizedName,
+      surname: data.normalizedSurname,
       email: data.normalizedEmail,
-      role: data.normalizedRole,
-      enabled: employee.enabled !== false
+      restaurantRole: data.normalizedRestaurantRole,
+      appRole: data.normalizedAppRole,
+      active: nextActive
     });
     await writeLog(`employee_update:${employee.id}`);
-    clearEmployeeForm();
+    closeEmployeeModal();
     await loadEmployees();
     syncEmployeeTabVisibility();
-    alert('Dipendente aggiornato.');
+    if (employee.id === currentUserUid && !nextActive) {
+      alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
+      await logout();
+    } else {
+      alert('Dipendente aggiornato.');
+    }
   } catch (e) {
     console.error('Errore aggiornamento dipendente:', e);
     alert('Errore aggiornamento: ' + e.message);
   }
 }
 
-function editEmployee(id) {
+function openEmployeeModal(id) {
   if (!isAdmin()) return;
   const employee = employeesData.find(emp => emp.id === id);
   if (!employee) return;
   editingEmployeeId = employee.id;
-  $('employeeName').value = employee.name || '';
-  $('employeeEmail').value = employee.email || '';
-  $('employeePassword').value = '';
-  $('employeeRole').value = normalizeRole(employee.role);
-  $('employeeSaveBtn').textContent = 'Salva modifiche';
-  $('employeeCancelBtn').classList.remove('hidden');
+  $('modalEmpName').value = employee.name || '';
+  $('modalEmpSurname').value = employee.surname || '';
+  $('modalEmpEmail').value = employee.email || '';
+  $('modalEmpPassword').value = '';
+  $('modalEmpRestaurantRole').value = normalizeRestaurantRole(employee.restaurantRole || '');
+  $('modalEmpAppRole').value = normalizeAppRole(employee.appRole || employee.role || '');
+  $('modalEmpActive').value = (employee.active !== false && employee.enabled !== false) ? 'true' : 'false';
+  $('employeeModal').classList.remove('hidden');
+}
+
+function closeEmployeeModal() {
+  editingEmployeeId = '';
+  $('employeeModal').classList.add('hidden');
+}
+
+async function deleteEmployeeFromModal() {
+  if (!isAdmin()) return alert('Solo admin');
+  const id = editingEmployeeId;
+  const employee = employeesData.find(emp => emp.id === id);
+  if (!employee) return;
+  if (!confirm(`Eliminare definitivamente ${employee.name || employee.email}?`)) return;
+  try {
+    await callEmployeeAdminFunction('deleteEmployeeAuthUser', { uid: employee.id });
+  } catch (e) {
+    console.error('Errore cancellazione auth dipendente:', e);
+    return alert('Eliminazione account Auth richiede Cloud Function `deleteEmployeeAuthUser` configurata.');
+  }
+  try {
+    await deleteDoc(employeeDoc(employee.id));
+    try {
+      await deleteDoc(userDoc(employee.id));
+    } catch (e) {
+      console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
+    }
+    await writeLog(`employee_delete:${employee.id}`);
+    closeEmployeeModal();
+    await loadEmployees();
+  } catch (e) {
+    console.error('Errore cancellazione profilo dipendente:', e);
+    alert('Errore cancellazione profilo: ' + e.message);
+  }
+}
+
+function editEmployee(id) {
+  openEmployeeModal(id);
 }
 
 async function toggleEmployeeEnabled(id) {
   if (!isAdmin()) return alert('Solo admin');
   const employee = employeesData.find(emp => emp.id === id);
   if (!employee) return;
-  const nextEnabled = employee.enabled === false;
+  const nextActive = employee.active === false || employee.enabled === false;
   try {
     await upsertEmployeeProfile(employee.id, {
       name: employee.name || '',
+      surname: employee.surname || '',
       email: normalizeEmail(employee.email),
-      role: normalizeRole(employee.role),
-      enabled: nextEnabled
+      restaurantRole: employee.restaurantRole || '',
+      appRole: employee.appRole || normalizeAppRole(employee.role || ''),
+      active: nextActive
     });
-    await writeLog(`employee_${nextEnabled ? 'enable' : 'disable'}:${employee.id}`);
+    await writeLog(`employee_${nextActive ? 'enable' : 'disable'}:${employee.id}`);
     await loadEmployees();
-    if (employee.id === currentUserUid && !nextEnabled) {
+    if (employee.id === currentUserUid && !nextActive) {
       alert('Il tuo account è stato disabilitato. Verrai disconnesso.');
       await logout();
     }
@@ -683,7 +777,7 @@ async function removeEmployee(id) {
       console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
     }
     await writeLog(`employee_delete:${employee.id}`);
-    if (editingEmployeeId === employee.id) clearEmployeeForm();
+    if (editingEmployeeId === employee.id) closeEmployeeModal();
     await loadEmployees();
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
@@ -729,8 +823,8 @@ async function loadCurrentUserProfile(user) {
         await upsertEmployeeProfile(user.uid, {
           name: deriveNameFromEmail(user.email),
           email: currentUser,
-          role: currentUserRole,
-          enabled: true
+          appRole: 'Waiter',
+          active: true
         }, true);
         await writeLog('employee_profile_bootstrap');
       }
@@ -1012,8 +1106,11 @@ function init() {
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
   $('saveSet').onclick = saveSettings;
-  $('employeeSaveBtn').onclick = () => editingEmployeeId ? updateEmployee() : createEmployee();
-  $('employeeCancelBtn').onclick = clearEmployeeForm;
+  $('employeeSaveBtn').onclick = createEmployee;
+  $('modalEmpSaveBtn').onclick = saveEmployeeModal;
+  $('modalEmpDeleteBtn').onclick = deleteEmployeeFromModal;
+  $('modalEmpCloseBtn').onclick = closeEmployeeModal;
+  $('employeeModal').onclick = e => { if (e.target === $('employeeModal')) closeEmployeeModal(); };
   $('shiftPrevWeekBtn').onclick = () => { weekOffset -= 1; clearShiftEditor(); attachShiftListeners(); };
   $('shiftCurrentWeekBtn').onclick = () => { weekOffset = 0; clearShiftEditor(); attachShiftListeners(); };
   $('shiftNextWeekBtn').onclick = () => { weekOffset += 1; clearShiftEditor(); attachShiftListeners(); };
@@ -1042,8 +1139,6 @@ function init() {
     const action = btn.getAttribute('data-employee-action');
     if (!id || !action) return;
     if (action === 'edit') editEmployee(id);
-    if (action === 'toggle') toggleEmployeeEnabled(id);
-    if (action === 'delete') removeEmployee(id);
   };
   $('loginBtn').onclick = doLogin;
   $('logoutBtn').onclick = logout;
@@ -1056,9 +1151,9 @@ function init() {
 
 // TAB NAVIGATION
 function tab(id, b) {
-  if (id === 'employeeManagement' && !isAdmin()) {
-    console.warn('Solo admin possono gestire i dipendenti.');
-    alert('Questa azione richiede permessi di amministratore.');
+  if (id === 'employeeManagement' && !isAdmin() && !isManager()) {
+    console.warn('Solo admin e manager possono vedere i dipendenti.');
+    alert('Non hai i permessi per accedere a questa sezione.');
     return;
   }
   if (id === 'settings' && !isAdmin()) {
