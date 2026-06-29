@@ -1,6 +1,6 @@
 import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 import { ref as rtdbRef, get as rtdbGet, set as rtdbSet, update as rtdbUpdate, remove as rtdbRemove } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
 import { firebaseConfig, getAuth, getDatabase } from "./firebase-config.js?v=13";
@@ -43,6 +43,7 @@ const PROFILE_LOAD_TIMEOUT_MS = 30000;
 const PRIMARY_LOAD_TIMEOUT_MS = 30000;
 const SECONDARY_LOAD_TIMEOUT_MS = 25000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
+const DEFAULT_EMPLOYEE_PASSWORD = 'angiesroma';
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 
@@ -90,6 +91,36 @@ function getFriendlyFirestoreMessage(error, fallback = 'Si è verificato un erro
     return 'Sessione scaduta. Effettua di nuovo il login.';
   }
   return fallback;
+}
+
+function getEmployeeStatusLabel(active) {
+  return active ? 'Active' : 'Inactive';
+}
+
+function isEmailAlreadyRegisteredError(error) {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code.includes('email-already-in-use') ||
+    code.includes('email-already-exists') ||
+    code.includes('already-exists') ||
+    message.includes('email-already-in-use') ||
+    message.includes('email-already-exists') ||
+    message.includes('already exists');
+}
+
+function isMissingAdminFunctionError(error) {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code.includes('functions/not-found') ||
+    code.includes('not-found') ||
+    code.includes('unimplemented') ||
+    message.includes('function not found') ||
+    message.includes('not found') ||
+    message.includes('does not exist');
+}
+
+function getDuplicateEmployeeEmailMessage(email) {
+  return `L'email ${email} è già registrata. Usa un indirizzo diverso o reimposta la password dell'account esistente.`;
 }
 
 function setStatus(id, message = '', type = 'info') {
@@ -228,6 +259,7 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
         restaurantRole,
         appRole: 'Admin',
         role: 'admin',
+        status: 'Active',
         active: true,
         updatedAt: serverTimestamp()
       }, { merge: true })
@@ -242,6 +274,7 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
         restaurantRole,
         appRole: 'Admin',
         role: 'Admin',
+        status: 'Active',
         enabled: true,
         active: true,
         updatedAt: serverTimestamp()
@@ -726,9 +759,9 @@ function clearEmployeeForm() {
   $('employeeSurname').value = '';
   $('employeeEmail').value = '';
   $('employeePhone').value = '';
-  $('employeePassword').value = '';
   $('employeeRestaurantRole').value = '';
   $('employeeAppRole').value = '';
+  $('employeeStatus').value = 'true';
   $('employeeSaveBtn').textContent = 'Crea dipendente';
 }
 
@@ -761,6 +794,7 @@ function renderEmployeesTable() {
       <td><span class="status-badge ${statusClass}">${statusText}</span></td>
       <td class="table-actions">
         <button data-employee-action="edit" data-employee-id="${esc(emp.id)}">Modifica</button>
+        <button data-employee-action="reset-password" data-employee-id="${esc(emp.id)}">Reimposta password</button>
       </td>
     </tr>`;
   });
@@ -821,14 +855,25 @@ function validateEmployeePayload({ name, surname, email, phone, restaurantRole, 
 }
 
 async function checkEmailUniqueness(email, ignoreId = '') {
-  const snap = await getDocs(employeeCollection());
-  return !snap.docs.some(d => d.id !== ignoreId && normalizeEmail(d.data()?.email) === email);
+  email = normalizeEmail(email);
+  const emailExistsInLoadedEmployees = employeesData.some(emp => emp.id !== ignoreId && normalizeEmail(emp.email) === email);
+  const emailExistsInLoadedUsers = usersData.some(user => user.id !== ignoreId && normalizeEmail(user.email) === email);
+  if (emailExistsInLoadedEmployees || emailExistsInLoadedUsers) return false;
+
+  const [employeeSnap, userSnap] = await Promise.all([
+    getDocs(query(employeeCollection(), where('email', '==', email))),
+    getDocs(query(usersCollection(), where('email', '==', email)))
+  ]);
+  const emailExistsInEmployees = employeeSnap.docs.some(d => d.id !== ignoreId);
+  const emailExistsInUsers = userSnap.docs.some(d => d.id !== ignoreId);
+  return !emailExistsInEmployees && !emailExistsInUsers;
 }
 
 async function upsertEmployeeProfile(uid, data, isCreate = false) {
   const appRole = data.appRole ? normalizeAppRole(data.appRole) : normalizeAppRole(data.role || '');
   const legacyRole = appRoleToLegacyRole(appRole || data.role || 'Waiter');
   const active = data.active !== false && data.enabled !== false;
+  const status = getEmployeeStatusLabel(active);
   const payload = {
     name: data.name,
     surname: data.surname || '',
@@ -837,6 +882,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     restaurantRole: data.restaurantRole || '',
     appRole: appRole || '',
     role: legacyRole,
+    status,
     enabled: active,
     active,
     updatedAt: serverTimestamp()
@@ -853,6 +899,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     restaurantRole: data.restaurantRole || '',
     appRole: appRole || '',
     role: legacyRole.toLowerCase(),
+    status,
     active,
     updatedAt: serverTimestamp()
   };
@@ -884,7 +931,7 @@ async function createEmployee() {
       phone: $('employeePhone').value,
       restaurantRole: $('employeeRestaurantRole').value,
       appRole: $('employeeAppRole').value,
-      password: $('employeePassword').value,
+      password: DEFAULT_EMPLOYEE_PASSWORD,
       requirePassword: true
     });
   } catch (e) {
@@ -892,6 +939,7 @@ async function createEmployee() {
   }
 
   let uid = '';
+  const nextActive = $('employeeStatus').value === 'true';
   try {
     const isUnique = await checkEmailUniqueness(data.normalizedEmail);
     if (!isUnique) return alert('Email già associata a un dipendente.');
@@ -902,22 +950,33 @@ async function createEmployee() {
   try {
     const fnResult = await callEmployeeAdminFunction('createEmployeeAuthUser', {
       email: data.normalizedEmail,
-      password: data.normalizedPassword,
+      password: DEFAULT_EMPLOYEE_PASSWORD,
       name: data.normalizedName,
       role: appRoleToLegacyRole(data.normalizedAppRole)
     });
     uid = fnResult.data?.uid ? String(fnResult.data.uid) : '';
   } catch (e) {
-    console.warn('Callable createEmployeeAuthUser non disponibile, uso fallback client-side.', e);
-    uid = '';
+    if (isEmailAlreadyRegisteredError(e)) {
+      return alert(getDuplicateEmployeeEmailMessage(data.normalizedEmail));
+    }
+    if (isMissingAdminFunctionError(e)) {
+      console.warn('Callable createEmployeeAuthUser non disponibile, uso fallback client-side.', e);
+      uid = '';
+    } else {
+      console.error('Errore creazione account Auth tramite Cloud Function:', e);
+      return alert('Errore creazione account: ' + getErrorDetails(e));
+    }
   }
 
   if (!uid) {
     try {
-      uid = await createAuthUserWithSecondarySession(data.normalizedEmail, data.normalizedPassword);
+      uid = await createAuthUserWithSecondarySession(data.normalizedEmail, DEFAULT_EMPLOYEE_PASSWORD);
     } catch (e) {
       console.error('Errore creazione utente auth:', e);
-      return alert('Errore creazione utente: ' + e.message);
+      if (isEmailAlreadyRegisteredError(e)) {
+        return alert(getDuplicateEmployeeEmailMessage(data.normalizedEmail));
+      }
+      return alert('Errore creazione utente: ' + getErrorDetails(e));
     }
   }
 
@@ -929,12 +988,12 @@ async function createEmployee() {
       phone: data.normalizedPhone,
       restaurantRole: data.normalizedRestaurantRole,
       appRole: data.normalizedAppRole,
-      active: true
+      active: nextActive
     }, true);
     await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
     await loadEmployees();
-    alert('Dipendente creato con successo.');
+    alert('Dipendente creato con successo. Invita il dipendente a cambiare la password dopo il primo accesso.');
   } catch (e) {
     console.error('Errore salvataggio profilo dipendente:', e);
     alert('Errore salvataggio profilo: ' + e.message);
@@ -1059,6 +1118,36 @@ async function deleteEmployeeFromModal() {
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
     alert('Errore cancellazione profilo: ' + e.message);
+  }
+}
+
+async function resetEmployeePassword(id) {
+  if (!isAdmin()) return alert('Solo admin');
+  const employee = employeesData.find(emp => emp.id === id);
+  if (!employee) return alert('Dipendente non trovato.');
+  const email = normalizeEmail(employee.email);
+  if (!email) return alert('Il dipendente non ha un indirizzo email valido.');
+  if (!confirm(`Reimpostare la password di ${employee.name || email}?`)) return;
+
+  try {
+    await callEmployeeAdminFunction('updateEmployeeAuthUser', {
+      uid: employee.id,
+      password: DEFAULT_EMPLOYEE_PASSWORD
+    });
+    await writeLog(`employee_password_reset:${employee.id}:default`);
+    alert('Password reimpostata con successo.');
+    return;
+  } catch (e) {
+    console.warn('Reset password diretto non disponibile, provo email reset Firebase.', e);
+  }
+
+  try {
+    await sendPasswordResetEmail(auth, email);
+    await writeLog(`employee_password_reset:${employee.id}:email`);
+    alert(`Email di reset inviata a ${email}.`);
+  } catch (e) {
+    console.error('Errore invio email reset password:', e);
+    alert('Impossibile reimpostare la password: ' + getErrorDetails(e));
   }
 }
 
@@ -1317,6 +1406,7 @@ async function loadCurrentUserProfile(user) {
           restaurantRole: profile.restaurantRole || '',
           appRole: resolvedAppRole,
           role: resolvedRole,
+          status: getEmployeeStatusLabel(enabled),
           active: enabled,
           updatedAt: serverTimestamp()
         }, { merge: true });
@@ -2001,6 +2091,7 @@ function init() {
   $('saveSet').onclick = saveSettings;
   $('employeeSaveBtn').onclick = createEmployee;
   $('modalEmpSaveBtn').onclick = saveEmployeeModal;
+  $('modalEmpResetPasswordBtn').onclick = () => resetEmployeePassword(editingEmployeeId);
   $('modalEmpDeleteBtn').onclick = deleteEmployeeFromModal;
   $('modalEmpCloseBtn').onclick = closeEmployeeModal;
   $('employeeModal').onclick = e => { if (e.target === $('employeeModal')) closeEmployeeModal(); };
@@ -2060,6 +2151,7 @@ function init() {
     const action = btn.getAttribute('data-employee-action');
     if (!id || !action) return;
     if (action === 'edit') editEmployee(id);
+    if (action === 'reset-password') resetEmployeePassword(id);
   };
   $('usersList').onchange = e => {
     const select = e.target.closest('.user-role-select');
