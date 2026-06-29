@@ -1,0 +1,80 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "users": {
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+        ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+        ".validate": "newData.val() == null || newData.hasChildren(['email','name','role','active'])",
+        "email": {
+          ".validate": "newData.isString()"
+        },
+        "name": {
+          ".validate": "newData.isString()"
+        },
+        "role": {
+          ".validate": "newData.isString() && newData.val().matches(/^(admin|manager|responsible|waiter)$/)"
+        },
+        "active": {
+          ".validate": "newData.isBoolean()"
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    },
+    "attendance": {
+      "$date": {
+        ".read": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+        "$uid": {
+          ".read": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+          ".write": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager')",
+          ".validate": "newData.val() == null || (newData.hasChildren(['uid','employeeName','date','entryTime','exitTime','pauseMinutes','notes','workedMinutes','scheduledShiftText','delayMinutes','earlyLeaveMinutes','updatedAt','updatedBy']) && newData.child('uid').val() === $uid && newData.child('date').val() === $date)",
+          "uid": {
+            ".validate": "newData.isString() && newData.val() === $uid"
+          },
+          "employeeName": {
+            ".validate": "newData.isString()"
+          },
+          "date": {
+            ".validate": "newData.isString() && newData.val() === $date"
+          },
+          "entryTime": {
+            ".validate": "newData.isString()"
+          },
+          "exitTime": {
+            ".validate": "newData.isString()"
+          },
+          "pauseMinutes": {
+            ".validate": "newData.isNumber()"
+          },
+          "notes": {
+            ".validate": "newData.isString()"
+          },
+          "workedMinutes": {
+            ".validate": "newData.val() == null || (newData.isNumber() && newData.val() >= 0)"
+          },
+          "scheduledShiftText": {
+            ".validate": "newData.isString()"
+          },
+          "delayMinutes": {
+            ".validate": "newData.isNumber()"
+          },
+          "earlyLeaveMinutes": {
+            ".validate": "newData.isNumber()"
+          },
+          "updatedAt": {
+            ".validate": "newData.isString()"
+          },
+          "updatedBy": {
+            ".validate": "newData.isString()"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    }
+  }
+}
