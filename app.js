@@ -444,6 +444,7 @@ async function loadEmployees() {
 }
 
 function clearEmployeeForm() {
+  editingEmployeeId = '';
   $('employeeName').value = '';
   $('employeeSurname').value = '';
   $('employeeEmail').value = '';
@@ -822,7 +823,9 @@ async function loadCurrentUserProfile(user) {
         currentUserRole = 'Waiter';
         await upsertEmployeeProfile(user.uid, {
           name: deriveNameFromEmail(user.email),
+          surname: '',
           email: currentUser,
+          restaurantRole: '',
           appRole: 'Waiter',
           active: true
         }, true);

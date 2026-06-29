@@ -85,7 +85,7 @@ service cloud.firestore {
     // Once /users/ docs exist, isUserAdmin() can be used for future rule updates.
     match /restaurants/angies/users/{uid} {
       // User can read their own document; admin or manager (via employees) can read all
-      allow read: if signedIn() && (request.auth.uid == uid || isAdmin() || isManagerOrAdmin());
+      allow read: if signedIn() && (request.auth.uid == uid || isManagerOrAdmin());
       // Only admin can create/update user documents
       allow create, update: if isAdmin() &&
         request.resource.data.role is string &&
