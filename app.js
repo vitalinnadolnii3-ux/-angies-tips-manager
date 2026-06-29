@@ -508,6 +508,7 @@ function renderEmployeesTable() {
 }
 
 const USER_ROLES_ADMIN = ['admin', 'manager', 'responsible', 'waiter'];
+const USER_ROLES_ALL = [...USER_ROLES_ADMIN, 'kitchen'];
 
 function renderUsersTable() {
   const table = $('usersList');
@@ -853,13 +854,12 @@ async function removeEmployee(id) {
 
 async function updateUserRole(uid, role) {
   if (!isAdmin()) return alert('Solo admin');
-  const USER_ROLES_ALL = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
   if (!USER_ROLES_ALL.includes(role)) return alert('Ruolo non valido.');
   try {
     await setDoc(userDoc(uid), { role, updatedAt: serverTimestamp() }, { merge: true });
-    // Sync to /employees/ for Firestore rules compatibility
-    const legacyRole = role === 'responsible' ? 'Responsible' : role.charAt(0).toUpperCase() + role.slice(1);
-    const appRoleSync = role === 'responsible' ? 'Responsabile' : legacyRole;
+    // Sync to /employees/ for Firestore rules compatibility using shared helpers
+    const legacyRole = appRoleToLegacyRole(role);
+    const appRoleSync = normalizeAppRole(role);
     await setDoc(employeeDoc(uid), { role: legacyRole, appRole: appRoleSync, updatedAt: serverTimestamp() }, { merge: true });
     await writeLog(`user_role_update:${uid}:${role}`);
     await loadUsersForAdmin();
@@ -874,7 +874,7 @@ async function toggleUserActive(uid) {
   if (!isAdmin()) return alert('Solo admin');
   const user = usersData.find(u => u.id === uid);
   if (!user) return;
-  const nextActive = user.active === false ? true : false;
+  const nextActive = user.active === false;
   try {
     await setDoc(userDoc(uid), { active: nextActive, updatedAt: serverTimestamp() }, { merge: true });
     await setDoc(employeeDoc(uid), { active: nextActive, enabled: nextActive, updatedAt: serverTimestamp() }, { merge: true });
