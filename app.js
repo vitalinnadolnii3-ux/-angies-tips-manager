@@ -44,6 +44,7 @@ const PRIMARY_LOAD_TIMEOUT_MS = 30000;
 const SECONDARY_LOAD_TIMEOUT_MS = 25000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
+const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -201,7 +202,8 @@ function isBootstrapAdminEmail(email) {
 }
 
 async function ensureBootstrapAdminProfile(user, profile = {}) {
-  const name = normalizeName(profile.name) || deriveNameFromEmail(user.email);
+  const defaultName = BOOTSTRAP_ADMIN_DEFAULT_NAMES[normalizeEmail(user.email)] || deriveNameFromEmail(user.email);
+  const name = normalizeName(profile.name) || defaultName;
   const surname = normalizeName(profile.surname || '');
   const email = normalizeEmail(user.email);
   const phone = String(profile.phone || '').trim();
@@ -255,7 +257,6 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
     .filter(Boolean);
   if (syncFailures.length) {
     console.warn('[Profilo] Sincronizzazione profilo admin incompleta:', syncFailures);
-    setStatus('loginStatus', 'Profilo admin sincronizzato solo in parte. Se mancano dati o permessi, contatta un amministratore e ripeti il login.', 'error');
   }
   return { name, surname, email, phone, restaurantRole };
 }
@@ -2600,6 +2601,7 @@ window.addEventListener('load', async () => {
         attachShiftListeners();
         render();
         showApp();
+        tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
         chatListen();
         writeLog('login');
 
