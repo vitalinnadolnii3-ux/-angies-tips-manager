@@ -41,6 +41,7 @@
       <button id="employeeTabBtn" class="hidden" data-tab="employeeManagement">👥 Dipendenti</button>
       <button id="settingsTabBtn" data-tab="settings">⚙️ Impostazioni</button>
     </nav>
+    <div id="appStatus" class="status-message hidden" role="status" aria-live="polite"></div>
 
     <main>
       <section id="dashboard" class="page active">
@@ -56,9 +57,9 @@
       <section id="newday" class="page">
         <h2>Nuova giornata</h2>
         <div class="panel grid">
-          <label>Data<input id="date" type="date"></label>
-          <label>Mance Cash<input id="cash" type="number" step="0.01" value="0"></label>
-          <label>Mance Carta<input id="card" type="number" step="0.01" value="0"></label>
+          <label>Data<input id="date" type="date" required></label>
+          <label>Mance Cash<input id="cash" type="number" step="0.01" min="0" max="100000" value="0"></label>
+          <label>Mance Carta<input id="card" type="number" step="0.01" min="0" max="100000" value="0"></label>
         </div>
         <table id="hours" class="panel"></table>
         <div class="panel calc">
@@ -132,10 +133,10 @@
       <section id="employeeManagement" class="page">
         <h2>Dipendenti</h2>
         <div id="employeeCreateForm" class="panel grid">
-          <label>Nome<input id="employeeName" type="text" placeholder="Nome dipendente"></label>
-          <label>Cognome<input id="employeeSurname" type="text" placeholder="Cognome dipendente"></label>
-          <label>Email<input id="employeeEmail" type="email" placeholder="email@azienda.com"></label>
-          <label>Telefono<input id="employeePhone" type="tel" placeholder="+39 000 000 0000"></label>
+          <label>Nome<input id="employeeName" type="text" maxlength="60" required placeholder="Nome dipendente"></label>
+          <label>Cognome<input id="employeeSurname" type="text" maxlength="60" placeholder="Cognome dipendente"></label>
+          <label>Email<input id="employeeEmail" type="email" required placeholder="email@azienda.com"></label>
+          <label>Telefono<input id="employeePhone" type="tel" inputmode="tel" maxlength="20" pattern="^\+?[0-9\s().-]{7,20}$" placeholder="+39 000 000 0000"></label>
           <label>Posizione nel ristorante
             <select id="employeeRestaurantRole">
               <option value="">Seleziona posizione</option>
@@ -270,10 +271,10 @@
       <div class="modal-card">
         <h3 id="modalEmpTitle">Modifica dipendente</h3>
         <div class="panel grid">
-          <label>Nome<input id="modalEmpName" type="text" placeholder="Nome"></label>
-          <label>Cognome<input id="modalEmpSurname" type="text" placeholder="Cognome"></label>
-          <label>Email<input id="modalEmpEmail" type="email" placeholder="email@azienda.com"></label>
-          <label>Telefono<input id="modalEmpPhone" type="tel" placeholder="+39 000 000 0000"></label>
+          <label>Nome<input id="modalEmpName" type="text" maxlength="60" required placeholder="Nome"></label>
+          <label>Cognome<input id="modalEmpSurname" type="text" maxlength="60" placeholder="Cognome"></label>
+          <label>Email<input id="modalEmpEmail" type="email" required placeholder="email@azienda.com"></label>
+          <label>Telefono<input id="modalEmpPhone" type="tel" inputmode="tel" maxlength="20" pattern="^\+?[0-9\s().-]{7,20}$" placeholder="+39 000 000 0000"></label>
           <label>Nuova password (opzionale)<input id="modalEmpPassword" type="password" autocomplete="new-password" placeholder="Lascia vuoto per non cambiare"></label>
           <label>Posizione nel ristorante
             <select id="modalEmpRestaurantRole">

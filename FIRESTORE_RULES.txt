@@ -36,15 +36,16 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return signedIn() && employeeEnabled() && employeeRole() == "Admin";
+      return signedIn() && employeeEnabled() && (employeeRole() == "admin" || employeeRole() == "Admin");
     }
 
     function isManagerOrAdmin() {
-      return signedIn() && employeeEnabled() && (employeeRole() == "Admin" || employeeRole() == "Manager");
+      return signedIn() && employeeEnabled() &&
+        (employeeRole() == "admin" || employeeRole() == "Admin" || employeeRole() == "manager" || employeeRole() == "Manager");
     }
 
     function isResponsible() {
-      return signedIn() && employeeEnabled() && employeeRole() == "Responsible";
+      return signedIn() && employeeEnabled() && (employeeRole() == "responsible" || employeeRole() == "Responsible");
     }
 
     function canManageShifts() {
@@ -94,7 +95,8 @@ service cloud.firestore {
     // Users collection - strict RBAC access control
     match /restaurants/angies/users/{uid} {
       // User can read their own document; admin or manager (via employees) can read all
-      allow read: if signedIn() && (request.auth.uid == uid || isManagerOrAdmin());
+      allow read: if signedIn() &&
+        (request.auth.uid == uid || isManagerOrAdmin() || isUserAdmin() || isUserManager());
       // Admins can manage all user documents; the bootstrap admin can repair their own profile
       allow create, update: if (isAdmin() ||
         (isBootstrapAdminSelfRepair(uid) &&
@@ -107,14 +109,16 @@ service cloud.firestore {
     }
 
     match /restaurants/angies/employees/{employeeId} {
-      allow read: if signedIn() && employeeEnabled();
+      // Admin/Manager can read all employee docs; each active employee can read only own doc.
+      allow read: if signedIn() && employeeEnabled() &&
+        (isManagerOrAdmin() || request.auth.uid == employeeId);
       allow create, update: if (isAdmin() ||
         (isBootstrapAdminSelfRepair(employeeId) &&
          request.resource.data.active == true &&
          request.resource.data.enabled == true &&
-         request.resource.data.role == 'Admin')) &&
+         (request.resource.data.role == 'admin' || request.resource.data.role == 'Admin'))) &&
         request.resource.data.role is string &&
-        request.resource.data.role in ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
+        request.resource.data.role in ['admin', 'manager', 'responsible', 'waiter', 'kitchen', 'Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
       allow delete: if isAdmin();
     }
 
