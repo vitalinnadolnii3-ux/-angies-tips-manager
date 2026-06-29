@@ -1421,56 +1421,11 @@ async function loadCurrentUserProfile(user) {
     console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', employeesResult.reason?.code, employeesResult.reason?.message);
   }
 
-  // 4. Auto-bootstrap: create profile for this user
-  const isAdminEmail = bootstrapAdmin;
-  const autoRole = isAdminEmail ? 'admin' : 'waiter';
-  const autoName = deriveNameFromEmail(user.email);
-  console.log('[Profilo] Creazione automatica profilo. Email:', currentUser, '| Ruolo assegnato:', autoRole);
-
-  if (isAdminEmail) {
-    const syncedProfile = await ensureBootstrapAdminProfile(user, { name: autoName, email: currentUser });
-    currentUserName = syncedProfile.name;
-    currentUserRole = 'admin';
-    setStatus('loginStatus', 'Profilo admin creato automaticamente. Benvenuto!', 'info');
-    console.log('[Profilo] Bootstrap admin completato. Ruolo finale:', currentUserRole);
-    try { await writeLog('employee_profile_bootstrap'); } catch (e) { console.warn('[Profilo] writeLog non riuscito (non bloccante):', e.message); }
-    return true;
-  }
-
-  // Try RTDB write first (may fail for non-admins if rules block it)
-  try {
-    await rtdbSet(rtdbUser(user.uid), { email: currentUser, name: autoName, role: autoRole, active: true });
-    console.log('[Profilo] Profilo RTDB creato automaticamente con ruolo:', autoRole);
-  } catch (e) {
-    console.warn('[Profilo] Scrittura RTDB non riuscita (non bloccante):', e.code, e.message);
-  }
-
-  // Try Firestore write (non-blocking)
-  try {
-    await upsertEmployeeProfile(user.uid, {
-      name: autoName,
-      surname: '',
-      email: currentUser,
-      restaurantRole: '',
-      appRole: autoRole.charAt(0).toUpperCase() + autoRole.slice(1),
-      role: autoRole,
-      active: true
-    }, true);
-    console.log('[Profilo] Profilo Firestore creato automaticamente con ruolo:', autoRole);
-  } catch (e) {
-    console.warn('[Profilo] Scrittura Firestore non riuscita (non bloccante):', e.code, e.message);
-  }
-
-  currentUserRole = autoRole;
-  setStatus('loginStatus',
-    isAdminEmail
-      ? 'Profilo admin creato automaticamente. Benvenuto!'
-      : 'Profilo creato automaticamente come waiter. Contatta un admin per aggiornare il ruolo.',
-    'info');
-  console.log('[Profilo] Bootstrap completato. Ruolo finale:', currentUserRole);
-
-  try { await writeLog('employee_profile_bootstrap'); } catch (e) { console.warn('[Profilo] writeLog non riuscito (non bloccante):', e.message); }
-  return true;
+  // 4. Access denied: only pre-registered users can enter
+  console.warn('[Profilo] Nessun profilo trovato per uid/email:', user.uid, currentUser);
+  setStatus('loginStatus', 'Accesso negato: email non autorizzata. Contatta un amministratore.', 'error');
+  await signOut(auth);
+  return false;
 }
 
 function shiftMapByKey() {
