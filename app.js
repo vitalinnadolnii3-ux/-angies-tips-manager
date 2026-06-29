@@ -451,13 +451,20 @@ async function writeLog(action, username = currentUser) {
 async function doLogin() {
   const email = normalizeEmail($('loginEmail').value);
   const pwd = $('loginPass').value;
-  if (!email) return alert('Inserisci l\'email');
-  if (!pwd) return alert('Inserisci la password');
+  if (!email) { setStatus('loginStatus', 'Inserisci l\'email.', 'error'); return; }
+  if (!pwd) { setStatus('loginStatus', 'Inserisci la password.', 'error'); return; }
+  setStatus('loginStatus', 'Accesso in corso…', 'info');
+  console.log('[Login] Tentativo di accesso per:', email);
   try {
     await signInWithEmailAndPassword(auth, email, pwd);
+    console.log('[Login] Autenticazione Firebase riuscita per:', email);
+    // Profile loading happens in onAuthStateChanged
   } catch (e) {
-    console.error('Errore login:', e);
-    return alert('Errore login: ' + e.message);
+    console.error('[Login] Errore autenticazione Firebase:', e.code, e.message);
+    const msg = e.code === 'auth/wrong-password' || e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential'
+      ? 'Email o password non corretti.'
+      : 'Errore login: ' + e.message;
+    setStatus('loginStatus', msg, 'error');
   }
 }
 
@@ -1022,75 +1029,136 @@ async function loadCurrentUserProfile(user) {
   currentUserName = deriveNameFromEmail(user.email);
   currentUserRole = '';
 
+  const ADMIN_EMAIL = 'vitalinnadolnii3@gmail.com';
+  console.log('[Profilo] Caricamento profilo per:', currentUser, '| uid:', currentUserUid);
+
+  // 1. Try Realtime Database users/{uid} (primary RBAC source)
+  let rtdbProfile = null;
   try {
-    // 1. Check Realtime Database users/{uid} (primary RBAC source)
+    console.log('[Profilo] Lettura RTDB users/' + currentUserUid + '…');
     const rtdbSnap = await rtdbGet(rtdbUser(user.uid));
     if (rtdbSnap.exists()) {
-      const profile = rtdbSnap.val();
-      const active = profile.active !== false;
-      if (!active) {
-        alert('Account disabilitato. Contatta un amministratore.');
-        await signOut(auth);
-        return false;
-      }
-      currentUserName = normalizeName(profile.name) || currentUserName;
-      currentUserRole = profile.role || 'waiter';
-      return true;
+      rtdbProfile = rtdbSnap.val();
+      console.log('[Profilo] Profilo RTDB trovato:', rtdbProfile);
+    } else {
+      console.log('[Profilo] Profilo RTDB non trovato — provo Firestore.');
     }
+  } catch (e) {
+    console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', e.code, e.message);
+    setStatus('loginStatus', 'Avviso RTDB: ' + e.message + ' — uso profilo alternativo.', 'info');
+  }
 
-    // 2. Fall back to Firestore /users/ collection
+  if (rtdbProfile !== null) {
+    const active = rtdbProfile.active !== false;
+    if (!active) {
+      console.warn('[Profilo] Account disattivato (RTDB) per uid:', currentUserUid);
+      setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
+      await signOut(auth);
+      return false;
+    }
+    currentUserName = normalizeName(rtdbProfile.name) || currentUserName;
+    currentUserRole = String(rtdbProfile.role || '').trim();
+    if (!currentUserRole) {
+      console.warn('[Profilo] Ruolo mancante nel profilo RTDB per uid:', currentUserUid);
+      setStatus('loginStatus', 'Avviso: ruolo non configurato. Contatta un amministratore.', 'info');
+      currentUserRole = 'waiter';
+    }
+    console.log('[Profilo] Login da RTDB riuscito. Ruolo:', currentUserRole);
+    return true;
+  }
+
+  // 2. Try Firestore /users/ collection
+  try {
+    console.log('[Profilo] Lettura Firestore /users/' + currentUserUid + '…');
     const userSnap = await getDoc(userDoc(user.uid));
     if (userSnap.exists()) {
       const profile = userSnap.data();
+      console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
       const active = profile.active !== false;
       if (!active) {
-        alert('Account disabilitato. Contatta un amministratore.');
+        setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
         await signOut(auth);
         return false;
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = profile.role || 'waiter';
-      // Migrate to RTDB for future logins
+      // Try to migrate to RTDB for future logins
       try {
         await writeUserToRTDB(user.uid, profile);
+        console.log('[Profilo] Migrazione a RTDB riuscita.');
       } catch (e) {
-        console.warn('Avviso: migrazione a RTDB non riuscita per uid:', user.uid, e.message);
+        console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', e.message);
       }
+      console.log('[Profilo] Login da Firestore /users/ riuscito. Ruolo:', currentUserRole);
       return true;
     }
+    console.log('[Profilo] Profilo Firestore /users/ non trovato — provo /employees/.');
+  } catch (e) {
+    console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', e.code, e.message);
+  }
 
-    // 3. Fall back to /employees/ collection
+  // 3. Try Firestore /employees/ collection
+  try {
+    console.log('[Profilo] Lettura Firestore /employees/' + currentUserUid + '…');
     const profileSnap = await getDoc(employeeDoc(user.uid));
     if (profileSnap.exists()) {
       const profile = profileSnap.data();
-      const enabled = profile.enabled !== false;
+      console.log('[Profilo] Profilo Firestore /employees/ trovato:', profile);
+      const enabled = profile.enabled !== false && profile.active !== false;
       if (!enabled) {
-        alert('Account disabilitato. Contatta un amministratore.');
+        setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
         await signOut(auth);
         return false;
       }
       currentUserName = normalizeName(profile.name) || currentUserName;
       currentUserRole = normalizeRole(profile.role) || 'Waiter';
+      console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
       return true;
     }
+    console.log('[Profilo] Profilo Firestore /employees/ non trovato — creo profilo automatico.');
+  } catch (e) {
+    console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', e.code, e.message);
+  }
 
-    // 4. Bootstrap new user profile
-    currentUserRole = 'Waiter';
+  // 4. Auto-bootstrap: create profile for this user
+  const isAdminEmail = normalizeEmail(user.email) === ADMIN_EMAIL;
+  const autoRole = isAdminEmail ? 'admin' : 'waiter';
+  const autoName = deriveNameFromEmail(user.email);
+  console.log('[Profilo] Creazione automatica profilo. Email:', currentUser, '| Ruolo assegnato:', autoRole);
+
+  // Try RTDB write first (may fail for non-admins if rules block it)
+  try {
+    await rtdbSet(rtdbUser(user.uid), { email: currentUser, name: autoName, role: autoRole, active: true });
+    console.log('[Profilo] Profilo RTDB creato automaticamente con ruolo:', autoRole);
+  } catch (e) {
+    console.warn('[Profilo] Scrittura RTDB non riuscita (non bloccante):', e.code, e.message);
+  }
+
+  // Try Firestore write (non-blocking)
+  try {
     await upsertEmployeeProfile(user.uid, {
-      name: deriveNameFromEmail(user.email),
+      name: autoName,
       surname: '',
       email: currentUser,
       restaurantRole: '',
-      appRole: 'Waiter',
+      appRole: autoRole.charAt(0).toUpperCase() + autoRole.slice(1),
+      role: autoRole,
       active: true
     }, true);
-    await writeLog('employee_profile_bootstrap');
+    console.log('[Profilo] Profilo Firestore creato automaticamente con ruolo:', autoRole);
   } catch (e) {
-    console.error('Errore caricamento profilo utente:', e);
-    alert('Errore caricamento profilo utente: ' + e.message);
-    await signOut(auth);
-    return false;
+    console.warn('[Profilo] Scrittura Firestore non riuscita (non bloccante):', e.code, e.message);
   }
+
+  currentUserRole = autoRole;
+  setStatus('loginStatus',
+    isAdminEmail
+      ? 'Profilo admin creato automaticamente. Benvenuto!'
+      : 'Profilo creato automaticamente come waiter. Contatta un admin per aggiornare il ruolo.',
+    'info');
+  console.log('[Profilo] Bootstrap completato. Ruolo finale:', currentUserRole);
+
+  try { await writeLog('employee_profile_bootstrap'); } catch (e) { console.warn('[Profilo] writeLog non riuscito (non bloccante):', e.message); }
   return true;
 }
 
