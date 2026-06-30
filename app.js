@@ -1453,8 +1453,9 @@ async function saveEmployeeModal() {
       appRole: data.normalizedAppRole,
       active: nextActive
     }, employee);
+    const currentUserRecord = usersData.find(user => user.id === employee.id) || {};
     upsertEmployeeCache(nextEmployee);
-    upsertUserCache(buildLocalUserRecord(employee.id, nextEmployee, usersData.find(user => user.id === employee.id) || {}));
+    upsertUserCache(buildLocalUserRecord(employee.id, nextEmployee, currentUserRecord));
     void writeLog(`employee_update:${employee.id}`);
     closeEmployeeModal();
     renderEmployeesTable();
@@ -1564,8 +1565,9 @@ async function toggleEmployeeEnabled(id) {
       active: nextActive
     });
     const nextEmployee = buildLocalEmployeeRecord(employee.id, { ...employee, active: nextActive }, employee);
+    const currentUserRecord = usersData.find(user => user.id === employee.id) || {};
     upsertEmployeeCache(nextEmployee);
-    upsertUserCache(buildLocalUserRecord(employee.id, { ...employee, active: nextActive }, usersData.find(user => user.id === employee.id) || {}));
+    upsertUserCache(buildLocalUserRecord(employee.id, { ...employee, active: nextActive }, currentUserRecord));
     void writeLog(`employee_${nextActive ? 'enable' : 'disable'}:${employee.id}`);
     renderEmployeesTable();
     renderUsersTable();
@@ -1627,7 +1629,8 @@ async function updateUserRole(uid, role) {
     } catch (e) {
       console.warn('Avviso: aggiornamento RTDB ruolo non riuscito per uid:', uid, 'ruolo:', role, e.message);
     }
-    upsertUserCache(buildLocalUserRecord(uid, { ...(usersData.find(user => user.id === uid) || {}), role }, usersData.find(user => user.id === uid) || {}));
+    const currentUserRecord = usersData.find(user => user.id === uid) || {};
+    upsertUserCache(buildLocalUserRecord(uid, { ...currentUserRecord, role }, currentUserRecord));
     const matchingEmployee = employeesData.find(emp => emp.id === uid);
     if (matchingEmployee) {
       upsertEmployeeCache(buildLocalEmployeeRecord(uid, { ...matchingEmployee, role: roleStorage, appRole: appRoleSync }, matchingEmployee));
@@ -2105,7 +2108,7 @@ function renderAttendance() {
   renderAttendanceWeeklyTable();
 }
 
-async function loadAttendanceData() {
+async function loadAttendanceData(forceRefresh = false) {
   if (!currentUserUid) {
     attendanceDayEntries = {};
     attendanceWeekEntries = {};
@@ -2120,7 +2123,7 @@ async function loadAttendanceData() {
   setAttendanceStatus('Caricamento entrate e uscite...', 'info');
   const weekDates = getWeekDatesForDate(selectedDate);
   const weekStart = weekDates[0].date;
-  if (attendanceLoadedWeekStart === weekStart && Object.keys(attendanceWeekEntries).length) {
+  if (!forceRefresh && attendanceLoadedWeekStart === weekStart && Object.keys(attendanceWeekEntries).length) {
     attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
     setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
     renderAttendance();
@@ -2201,8 +2204,7 @@ async function saveAttendance() {
       });
     }));
     void writeLog(`attendance_save:${attendanceDate}`);
-    attendanceLoadedWeekStart = '';
-    await loadAttendanceData();
+    await loadAttendanceData(true);
     setAttendanceStatus('Entrate e uscite salvate.', 'info');
   } catch (e) {
     console.error('Errore salvataggio entrate e uscite:', e);
@@ -2395,6 +2397,7 @@ async function saveShift() {
       void writeLog(`shift_create:${uid}:${date}`);
     }
     attendanceLoadedWeekStart = '';
+    sectionLoaded.attendance = false;
     clearShiftEditor();
     setShiftStatus('Turno salvato.', 'info');
   } catch (e) {
@@ -2415,6 +2418,7 @@ async function deleteShift() {
     await deleteDoc(shiftDoc(editingShiftId));
     void writeLog(`shift_delete:${editingShiftId}`);
     attendanceLoadedWeekStart = '';
+    sectionLoaded.attendance = false;
     clearShiftEditor();
   } catch (e) {
     console.error('Errore eliminazione turno:', e);
