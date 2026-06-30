@@ -110,7 +110,14 @@ function resetSectionLoadedState() {
   shiftLoadPromise = null;
   sessionPrefetchPromise = null;
   attendanceLoadedWeekStart = '';
-  attendanceWeeklyRenderHandle = 0;
+  if (attendanceWeeklyRenderHandle) {
+    if (typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(attendanceWeeklyRenderHandle);
+    } else {
+      window.clearTimeout(attendanceWeeklyRenderHandle);
+    }
+    attendanceWeeklyRenderHandle = 0;
+  }
   chatRenderedMessageIds = new Set();
 }
 
@@ -659,16 +666,18 @@ function getShiftEmployees() {
   return currentUserUid ? [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUser }] : [];
 }
 
-function sortEmployeesList(list = []) {
+function sortPeopleByName(list = []) {
   return [...list].sort((a, b) =>
     normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' })
   );
 }
 
+function sortEmployeesList(list = []) {
+  return sortPeopleByName(list);
+}
+
 function sortUsersList(list = []) {
-  return [...list].sort((a, b) =>
-    normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' })
-  );
+  return sortPeopleByName(list);
 }
 
 function syncStateEmployeesFromEmployeesData() {
