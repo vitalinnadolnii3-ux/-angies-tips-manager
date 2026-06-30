@@ -1817,23 +1817,22 @@ async function loadCurrentUserProfile(user) {
     }
   ];
 
-  const wrappedReads = profileReads.map(read => {
-    const wrapped = Promise.resolve(read.promise)
-      .then(value => ({ wrapped, read, status: 'fulfilled', value }))
-      .catch(reason => ({ wrapped, read, status: 'rejected', reason }));
-    return wrapped;
-  });
-  const pendingReads = new Set(wrappedReads);
+  const wrappedReads = profileReads.map((read, index) => Promise.resolve(read.promise)
+    .then(value => ({ index, status: 'fulfilled', value }))
+    .catch(reason => ({ index, status: 'rejected', reason }))
+  );
+  const pendingIndexes = new Set(wrappedReads.map((_, index) => index));
 
-  while (pendingReads.size) {
-    const result = await Promise.race(Array.from(pendingReads));
-    pendingReads.delete(result.wrapped);
+  while (pendingIndexes.size) {
+    const result = await Promise.race(Array.from(pendingIndexes).map(index => wrappedReads[index]));
+    pendingIndexes.delete(result.index);
+    const read = profileReads[result.index];
 
     if (result.status === 'rejected') {
-      if (result.read.key === 'rtdb') {
+      if (read.key === 'rtdb') {
         console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
         setStatus('loginStatus', 'Avviso RTDB: ' + getErrorDetails(result.reason) + ' — uso profilo alternativo.', 'info');
-      } else if (result.read.key === 'users') {
+      } else if (read.key === 'users') {
         console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
       } else {
         console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
@@ -1841,7 +1840,7 @@ async function loadCurrentUserProfile(user) {
       continue;
     }
 
-    if (result.read.key === 'rtdb') {
+    if (read.key === 'rtdb') {
       if (!result.value.exists()) {
         console.log('[Profilo] Profilo RTDB non trovato — continuo race con Firestore.');
         continue;
@@ -1851,7 +1850,7 @@ async function loadCurrentUserProfile(user) {
       return await applyRtdbProfile(rtdbProfile);
     }
 
-    if (result.read.key === 'users') {
+    if (read.key === 'users') {
       if (!result.value.exists()) {
         console.log('[Profilo] Profilo Firestore /users/ non trovato — continuo race.');
         continue;
@@ -1859,10 +1858,6 @@ async function loadCurrentUserProfile(user) {
       const profile = result.value.data();
       console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
       return await applyUsersProfile(profile);
-    }
-
-    if (result.read.key !== 'employees') {
-      continue;
     }
 
     if (!result.value.exists()) {
