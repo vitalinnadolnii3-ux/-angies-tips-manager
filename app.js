@@ -1755,7 +1755,7 @@ async function loadCurrentUserProfile(user) {
     writeUserToRTDB(user.uid, profile).then(() => {
       console.log('[Profilo] Migrazione a RTDB riuscita.');
     }).catch(e => {
-      console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', e.message);
+      console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', getErrorDetails(e));
     });
     console.log('[Profilo] Login da Firestore /users/ riuscito. Ruolo:', currentUserRole);
     return true;
