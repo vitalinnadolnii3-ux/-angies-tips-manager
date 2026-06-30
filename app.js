@@ -67,9 +67,14 @@ let employeeLoadPromise = null;
 let userLoadPromise = null;
 let attendanceLoadPromise = null;
 let shiftLoadPromise = null;
+let sessionPrefetchPromise = null;
+let attendanceLoadedWeekStart = '';
+let attendanceWeeklyRenderHandle = 0;
+let chatRenderedMessageIds = new Set();
 
 const $ = id => document.getElementById(id);
-const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
+const euroFormatter = new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' });
+const euro = n => euroFormatter.format(+n || 0);
 const today = () => new Date().toISOString().slice(0, 10);
 const esc = s => String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"}[c]));
 const normalizeEmail = s => String(s || '').trim().toLowerCase();
@@ -103,6 +108,10 @@ function resetSectionLoadedState() {
   userLoadPromise = null;
   attendanceLoadPromise = null;
   shiftLoadPromise = null;
+  sessionPrefetchPromise = null;
+  attendanceLoadedWeekStart = '';
+  attendanceWeeklyRenderHandle = 0;
+  chatRenderedMessageIds = new Set();
 }
 
 function ensureFirebaseServicesReady() {
@@ -203,6 +212,15 @@ function isValidEmailFormat(email) {
 
 function normalizePhone(phone) {
   return String(phone || '').trim().replace(/\s+/g, ' ');
+}
+
+function scheduleBackgroundTask(task) {
+  if (typeof task !== 'function') return;
+  if (typeof window.requestIdleCallback === 'function') {
+    window.requestIdleCallback(() => task(), { timeout: 1200 });
+    return;
+  }
+  window.setTimeout(task, 0);
 }
 
 function isValidPhoneFormat(phone) {
@@ -641,6 +659,132 @@ function getShiftEmployees() {
   return currentUserUid ? [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUser }] : [];
 }
 
+function sortEmployeesList(list = []) {
+  return [...list].sort((a, b) =>
+    normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' })
+  );
+}
+
+function sortUsersList(list = []) {
+  return [...list].sort((a, b) =>
+    normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' })
+  );
+}
+
+function syncStateEmployeesFromEmployeesData() {
+  const activeEmps = employeesData.filter(emp => emp.enabled !== false && emp.active !== false);
+  if (activeEmps.length > 0) {
+    state.employees = activeEmps.map(emp => normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id);
+  }
+}
+
+function setEmployeesCache(list = []) {
+  employeesData = sortEmployeesList(list);
+  syncStateEmployeesFromEmployeesData();
+}
+
+function setUsersCache(list = []) {
+  usersData = sortUsersList(list);
+}
+
+function upsertEmployeeCache(record) {
+  if (!record?.id) return;
+  setEmployeesCache([...employeesData.filter(emp => emp.id !== record.id), record]);
+}
+
+function removeEmployeeCache(uid) {
+  setEmployeesCache(employeesData.filter(emp => emp.id !== uid));
+}
+
+function upsertUserCache(record) {
+  if (!record?.id) return;
+  setUsersCache([...usersData.filter(user => user.id !== record.id), record]);
+}
+
+function removeUserCache(uid) {
+  setUsersCache(usersData.filter(user => user.id !== uid));
+}
+
+function buildLocalEmployeeRecord(uid, data = {}, previous = {}) {
+  const name = normalizeName(data.name ?? previous.name ?? '');
+  const surname = normalizeName(data.surname ?? previous.surname ?? '');
+  const email = normalizeEmail(data.email ?? previous.email ?? '');
+  const phone = normalizePhone(data.phone ?? previous.phone ?? '');
+  const restaurantRole = normalizeRestaurantRole(data.restaurantRole ?? previous.restaurantRole ?? '');
+  const appRole = normalizeAppRole(data.appRole ?? previous.appRole ?? previous.role ?? data.role ?? '') || '';
+  const role = normalizeStoredRole(data.role ?? appRole ?? previous.role ?? 'waiter');
+  const active = (data.active ?? data.enabled ?? previous.active ?? previous.enabled) !== false;
+  return {
+    ...previous,
+    id: uid,
+    name,
+    surname,
+    email,
+    phone,
+    restaurantRole,
+    appRole,
+    role,
+    status: getEmployeeStatusLabel(active),
+    enabled: active,
+    active
+  };
+}
+
+function buildLocalUserRecord(uid, data = {}, previous = {}) {
+  const name = normalizeName(data.name ?? previous.name ?? '');
+  const surname = normalizeName(data.surname ?? previous.surname ?? '');
+  const email = normalizeEmail(data.email ?? previous.email ?? '');
+  const phone = normalizePhone(data.phone ?? previous.phone ?? '');
+  const restaurantRole = normalizeRestaurantRole(data.restaurantRole ?? previous.restaurantRole ?? '');
+  const role = normalizeStoredRole(data.role ?? previous.role ?? data.appRole ?? previous.appRole ?? 'waiter');
+  const appRole = normalizeAppRole(data.appRole ?? previous.appRole ?? role) || roleToAppRoleLabel(role);
+  const active = (data.active ?? previous.active) !== false;
+  return {
+    ...previous,
+    id: uid,
+    name,
+    surname,
+    email,
+    phone,
+    restaurantRole,
+    appRole,
+    role,
+    status: getEmployeeStatusLabel(active),
+    active
+  };
+}
+
+function scheduleAttendanceWeeklyRender() {
+  if (attendanceWeeklyRenderHandle) return;
+  const renderSummary = () => {
+    attendanceWeeklyRenderHandle = 0;
+    renderAttendanceWeeklyTable();
+  };
+  if (typeof window.requestAnimationFrame === 'function') {
+    attendanceWeeklyRenderHandle = window.requestAnimationFrame(renderSummary);
+    return;
+  }
+  attendanceWeeklyRenderHandle = window.setTimeout(renderSummary, 0);
+}
+
+function prefetchSessionData() {
+  if (!currentUserUid) return Promise.resolve();
+  if (sessionPrefetchPromise) return sessionPrefetchPromise;
+  const tasks = [];
+  if (!sectionLoaded.primary) tasks.push(ensurePrimaryLoaded());
+  if ((isAdmin() || canManageShifts() || canManageAttendance() || canViewGlobalTipsData()) && !sectionLoaded.employees) {
+    tasks.push(ensureEmployeesLoaded());
+  }
+  if (isAdmin() && !sectionLoaded.users) {
+    tasks.push(ensureUsersLoaded());
+  }
+  if (!tasks.length) return Promise.resolve();
+  sessionPrefetchPromise = Promise.allSettled(tasks).finally(() => {
+    sessionPrefetchPromise = null;
+  });
+  return sessionPrefetchPromise;
+}
+
 async function callEmployeeAdminFunction(name, payload) {
   const callable = httpsCallable(functions, name);
   return callable(payload);
@@ -855,13 +999,7 @@ async function loadEmployees() {
   try {
     // Con regole ristrette, la lista completa è disponibile solo ad admin/manager.
     const snap = await getDocs(employeeCollection());
-    employeesData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
-    // Sync state.employees from Firestore so Nuova Giornata / Storico use the live list
-    const activeEmps = employeesData.filter(emp => emp.enabled !== false && emp.active !== false);
-    if (activeEmps.length > 0) {
-      state.employees = activeEmps.map(emp => normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id);
-    }
+    setEmployeesCache(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     renderEmployeesTable();
   } catch (e) {
     if (e.code === 'permission-denied') {
@@ -886,16 +1024,13 @@ async function loadUsersForAdmin() {
     const rtdbSnap = await rtdbGet(rtdbUsers());
     if (rtdbSnap.exists()) {
       const rtdbVal = rtdbSnap.val();
-      usersData = Object.entries(rtdbVal)
-        .map(([id, data]) => ({ id, ...data }))
-        .sort((a, b) => normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' }));
+      setUsersCache(Object.entries(rtdbVal).map(([id, data]) => ({ id, ...data })));
       renderUsersTable();
       return;
     }
     // Fall back to Firestore /users/ collection
     const snap = await getDocs(usersCollection());
-    usersData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
-      .sort((a, b) => normalizeName(a.name || a.email || '').localeCompare(normalizeName(b.name || b.email || ''), 'it', { sensitivity: 'base' }));
+    setUsersCache(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     renderUsersTable();
   } catch (e) {
     console.error('Errore caricamento utenti:', e);
@@ -1065,14 +1200,24 @@ async function checkEmailUniqueness(email, ignoreId = '') {
   const emailExistsInLoadedEmployees = employeesData.some(emp => emp.id !== ignoreId && normalizeEmail(emp.email) === email);
   const emailExistsInLoadedUsers = usersData.some(user => user.id !== ignoreId && normalizeEmail(user.email) === email);
   if (emailExistsInLoadedEmployees || emailExistsInLoadedUsers) return false;
-
-  const [employeeSnap, userSnap] = await Promise.all([
-    getDocs(query(employeeCollection(), where('email', '==', email))),
-    getDocs(query(usersCollection(), where('email', '==', email)))
-  ]);
-  const emailExistsInEmployees = employeeSnap.docs.some(d => d.id !== ignoreId);
-  const emailExistsInUsers = userSnap.docs.some(d => d.id !== ignoreId);
-  return !emailExistsInEmployees && !emailExistsInUsers;
+  const pendingReads = [];
+  if (!sectionLoaded.employees) {
+    pendingReads.push(
+      getDocs(query(employeeCollection(), where('email', '==', email))).then(snap =>
+        snap.docs.some(d => d.id !== ignoreId)
+      )
+    );
+  }
+  if (!sectionLoaded.users) {
+    pendingReads.push(
+      getDocs(query(usersCollection(), where('email', '==', email))).then(snap =>
+        snap.docs.some(d => d.id !== ignoreId)
+      )
+    );
+  }
+  if (!pendingReads.length) return true;
+  const results = await Promise.all(pendingReads);
+  return !results.some(Boolean);
 }
 
 async function upsertEmployeeProfile(uid, data, isCreate = false) {
@@ -1203,9 +1348,21 @@ async function createEmployee() {
       appRole: data.normalizedAppRole,
       active: nextActive
     }, true);
-    await writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
+    const nextEmployee = buildLocalEmployeeRecord(uid, {
+      name: data.normalizedName,
+      surname: data.normalizedSurname,
+      email: data.normalizedEmail,
+      phone: data.normalizedPhone,
+      restaurantRole: data.normalizedRestaurantRole,
+      appRole: data.normalizedAppRole,
+      active: nextActive
+    });
+    upsertEmployeeCache(nextEmployee);
+    upsertUserCache(buildLocalUserRecord(uid, nextEmployee));
+    void writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
-    await loadEmployees();
+    renderEmployeesTable();
+    renderUsersTable();
     try {
       await sendPasswordResetEmail(auth, data.normalizedEmail);
       notify(`Dipendente creato. Email di attivazione/reset inviata a ${data.normalizedEmail}.`, 'info');
@@ -1277,9 +1434,22 @@ async function saveEmployeeModal() {
       appRole: data.normalizedAppRole,
       active: nextActive
     });
-    await writeLog(`employee_update:${employee.id}`);
+    const nextEmployee = buildLocalEmployeeRecord(employee.id, {
+      ...employee,
+      name: data.normalizedName,
+      surname: data.normalizedSurname,
+      email: data.normalizedEmail,
+      phone: data.normalizedPhone,
+      restaurantRole: data.normalizedRestaurantRole,
+      appRole: data.normalizedAppRole,
+      active: nextActive
+    }, employee);
+    upsertEmployeeCache(nextEmployee);
+    upsertUserCache(buildLocalUserRecord(employee.id, nextEmployee, usersData.find(user => user.id === employee.id) || {}));
+    void writeLog(`employee_update:${employee.id}`);
     closeEmployeeModal();
-    await loadEmployees();
+    renderEmployeesTable();
+    renderUsersTable();
     syncEmployeeTabVisibility();
     if (employee.id === currentUserUid && !nextActive) {
       notify('Il tuo account è stato disabilitato. Verrai disconnesso.', 'error');
@@ -1335,9 +1505,12 @@ async function deleteEmployeeFromModal() {
       console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
     }
     await deleteUserFromRTDB(employee.id);
-    await writeLog(`employee_delete:${employee.id}`);
+    removeEmployeeCache(employee.id);
+    removeUserCache(employee.id);
+    void writeLog(`employee_delete:${employee.id}`);
     closeEmployeeModal();
-    await loadEmployees();
+    renderEmployeesTable();
+    renderUsersTable();
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
     notify('Errore cancellazione profilo: ' + e.message, 'error');
@@ -1354,7 +1527,7 @@ async function resetEmployeePassword(id) {
 
   try {
     await sendPasswordResetEmail(auth, email);
-    await writeLog(`employee_password_reset:${employee.id}:email`);
+    void writeLog(`employee_password_reset:${employee.id}:email`);
     notify(`Email di reset inviata a ${email}.`, 'info');
   } catch (e) {
     console.error('Errore invio email reset password:', e);
@@ -1381,8 +1554,12 @@ async function toggleEmployeeEnabled(id) {
       appRole: employee.appRole || normalizeAppRole(employee.role || ''),
       active: nextActive
     });
-    await writeLog(`employee_${nextActive ? 'enable' : 'disable'}:${employee.id}`);
-    await loadEmployees();
+    const nextEmployee = buildLocalEmployeeRecord(employee.id, { ...employee, active: nextActive }, employee);
+    upsertEmployeeCache(nextEmployee);
+    upsertUserCache(buildLocalUserRecord(employee.id, { ...employee, active: nextActive }, usersData.find(user => user.id === employee.id) || {}));
+    void writeLog(`employee_${nextActive ? 'enable' : 'disable'}:${employee.id}`);
+    renderEmployeesTable();
+    renderUsersTable();
     if (employee.id === currentUserUid && !nextActive) {
       notify('Il tuo account è stato disabilitato. Verrai disconnesso.', 'error');
       await logout();
@@ -1414,9 +1591,12 @@ async function removeEmployee(id) {
       console.warn('Avviso: cancellazione /users/ non riuscita:', e.message);
     }
     await deleteUserFromRTDB(employee.id);
-    await writeLog(`employee_delete:${employee.id}`);
+    removeEmployeeCache(employee.id);
+    removeUserCache(employee.id);
+    void writeLog(`employee_delete:${employee.id}`);
     if (editingEmployeeId === employee.id) closeEmployeeModal();
-    await loadEmployees();
+    renderEmployeesTable();
+    renderUsersTable();
   } catch (e) {
     console.error('Errore cancellazione profilo dipendente:', e);
     notify('Errore cancellazione profilo: ' + e.message, 'error');
@@ -1438,12 +1618,16 @@ async function updateUserRole(uid, role) {
     } catch (e) {
       console.warn('Avviso: aggiornamento RTDB ruolo non riuscito per uid:', uid, 'ruolo:', role, e.message);
     }
-    await writeLog(`user_role_update:${uid}:${role}`);
-    await loadUsersForAdmin();
+    upsertUserCache(buildLocalUserRecord(uid, { ...(usersData.find(user => user.id === uid) || {}), role }, usersData.find(user => user.id === uid) || {}));
+    const matchingEmployee = employeesData.find(emp => emp.id === uid);
+    if (matchingEmployee) {
+      upsertEmployeeCache(buildLocalEmployeeRecord(uid, { ...matchingEmployee, role: roleStorage, appRole: appRoleSync }, matchingEmployee));
+    }
+    void writeLog(`user_role_update:${uid}:${role}`);
+    renderUsersTable();
   } catch (e) {
     console.error('Errore aggiornamento ruolo utente:', e);
     notify('Errore aggiornamento ruolo: ' + e.message, 'error');
-    await loadUsersForAdmin();
   }
 }
 
@@ -1461,8 +1645,14 @@ async function toggleUserActive(uid) {
     } catch (e) {
       console.warn('Avviso: aggiornamento RTDB stato non riuscito per uid:', uid, 'stato:', nextActive, e.message);
     }
-    await writeLog(`user_${nextActive ? 'enable' : 'disable'}:${uid}`);
-    await loadUsersForAdmin();
+    upsertUserCache(buildLocalUserRecord(uid, { ...user, active: nextActive }, user));
+    const matchingEmployee = employeesData.find(emp => emp.id === uid);
+    if (matchingEmployee) {
+      upsertEmployeeCache(buildLocalEmployeeRecord(uid, { ...matchingEmployee, active: nextActive }, matchingEmployee));
+    }
+    void writeLog(`user_${nextActive ? 'enable' : 'disable'}:${uid}`);
+    renderUsersTable();
+    renderEmployeesTable();
     if (uid === currentUserUid && !nextActive) {
       notify('Il tuo account è stato disabilitato. Verrai disconnesso.', 'error');
       await logout();
@@ -1911,6 +2101,7 @@ async function loadAttendanceData() {
     attendanceDayEntries = {};
     attendanceWeekEntries = {};
     attendanceShiftData = [];
+    attendanceLoadedWeekStart = '';
     setAttendanceStatus('');
     renderAttendance();
     return;
@@ -1919,6 +2110,13 @@ async function loadAttendanceData() {
   setAttendanceDateValue(selectedDate);
   setAttendanceStatus('Caricamento entrate e uscite...', 'info');
   const weekDates = getWeekDatesForDate(selectedDate);
+  const weekStart = weekDates[0].date;
+  if (attendanceLoadedWeekStart === weekStart && Object.keys(attendanceWeekEntries).length) {
+    attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
+    setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
+    renderAttendance();
+    return;
+  }
   try {
     const attendanceReads = weekDates.map(day => {
       const path = canViewAllAttendance() ? attendancePath(day.date) : attendancePath(day.date, currentUserUid);
@@ -1944,6 +2142,7 @@ async function loadAttendanceData() {
     });
     attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
     attendanceShiftData = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    attendanceLoadedWeekStart = weekStart;
     setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
     renderAttendance();
   } catch (e) {
@@ -1951,6 +2150,7 @@ async function loadAttendanceData() {
     attendanceDayEntries = {};
     attendanceWeekEntries = {};
     attendanceShiftData = [];
+    attendanceLoadedWeekStart = '';
     setAttendanceStatus('Impossibile caricare entrata e uscita.', 'error');
     renderAttendance();
   }
@@ -1991,7 +2191,8 @@ async function saveAttendance() {
         updatedBy: currentUserUid || ''
       });
     }));
-    await writeLog(`attendance_save:${attendanceDate}`);
+    void writeLog(`attendance_save:${attendanceDate}`);
+    attendanceLoadedWeekStart = '';
     await loadAttendanceData();
     setAttendanceStatus('Entrate e uscite salvate.', 'info');
   } catch (e) {
@@ -2175,15 +2376,16 @@ async function saveShift() {
   try {
     if (editingShiftId) {
       await setDoc(shiftDoc(editingShiftId), payload, { merge: true });
-      await writeLog(`shift_update:${editingShiftId}`);
+      void writeLog(`shift_update:${editingShiftId}`);
     } else {
       await addDoc(shiftCollection(), {
         ...payload,
         createdBy: currentUserUid || '',
         createdAt: serverTimestamp()
       });
-      await writeLog(`shift_create:${uid}:${date}`);
+      void writeLog(`shift_create:${uid}:${date}`);
     }
+    attendanceLoadedWeekStart = '';
     clearShiftEditor();
     setShiftStatus('Turno salvato.', 'info');
   } catch (e) {
@@ -2202,7 +2404,8 @@ async function deleteShift() {
   if (!confirm('Eliminare questo turno?')) return;
   try {
     await deleteDoc(shiftDoc(editingShiftId));
-    await writeLog(`shift_delete:${editingShiftId}`);
+    void writeLog(`shift_delete:${editingShiftId}`);
+    attendanceLoadedWeekStart = '';
     clearShiftEditor();
   } catch (e) {
     console.error('Errore eliminazione turno:', e);
@@ -2308,21 +2511,21 @@ function init() {
     const date = parseISODate(attendanceDate || today());
     date.setDate(date.getDate() - 1);
     setAttendanceDateValue(toISODate(date));
-    loadAttendanceData();
+    void loadAttendanceData();
   };
   $('attendanceTodayBtn').onclick = () => {
     setAttendanceDateValue(today());
-    loadAttendanceData();
+    void loadAttendanceData();
   };
   $('attendanceNextDayBtn').onclick = () => {
     const date = parseISODate(attendanceDate || today());
     date.setDate(date.getDate() + 1);
     setAttendanceDateValue(toISODate(date));
-    loadAttendanceData();
+    void loadAttendanceData();
   };
   $('attendanceDate').onchange = () => {
     setAttendanceDateValue($('attendanceDate').value || today());
-    loadAttendanceData();
+    void loadAttendanceData();
   };
   $('attendanceSaveBtn').onclick = saveAttendance;
   $('attendanceTable').oninput = e => {
@@ -2331,7 +2534,7 @@ function init() {
     const rowUid = row.getAttribute('data-attendance-uid');
     if (!canManageAttendance() && rowUid !== currentUserUid) return;
     updateAttendanceRow(row);
-    renderAttendanceWeeklyTable();
+    scheduleAttendanceWeeklyRender();
     setAttendanceStatus('Modifiche non salvate.', 'info');
   };
   $('shiftsTable').onclick = e => {
@@ -2408,20 +2611,24 @@ async function tab(id, b) {
   document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
   if (b) b.classList.add('active');
   try {
+    const loadTasks = [];
     if (id === 'dashboard' || id === 'newday' || id === 'history' || id === 'stats' || id === 'settings') {
-      await ensurePrimaryLoaded();
+      loadTasks.push(ensurePrimaryLoaded());
     }
     if (id === 'newday' || id === 'employeeManagement' || (id === 'attendance' && canManageAttendance()) || (id === 'turni' && canManageShifts())) {
-      await ensureEmployeesLoaded();
+      loadTasks.push(ensureEmployeesLoaded());
     }
     if (id === 'settings') {
-      await ensureUsersLoaded();
+      loadTasks.push(ensureUsersLoaded());
     }
     if (id === 'attendance') {
-      await ensureAttendanceLoaded();
+      loadTasks.push(ensureAttendanceLoaded());
     }
     if (id === 'turni' || id === 'myShifts') {
-      await ensureShiftsLoaded();
+      loadTasks.push(ensureShiftsLoaded());
+    }
+    if (loadTasks.length) {
+      await Promise.all(loadTasks);
     }
     if (id === 'chat') {
       chatListen();
@@ -2608,9 +2815,10 @@ async function saveDay() {
 async function populateHoursFromAttendance(date) {
   if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
   try {
-    const snap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
-    if (!snap.exists()) return;
-    const dayAttendance = snap.val();
+    const cachedDayAttendance = attendanceWeekEntries?.[date];
+    const dayAttendance = cachedDayAttendance && typeof cachedDayAttendance === 'object'
+      ? cachedDayAttendance
+      : await rtdbGet(rtdbRef(rtdb, `attendance/${date}`)).then(snap => snap.exists() ? snap.val() : null);
     if (!dayAttendance || typeof dayAttendance !== 'object') return;
     const rows = document.querySelectorAll('#hours tr[data-emp-id]');
     let anyFilled = false;
@@ -2817,12 +3025,33 @@ async function saveSettings() {
 // CHAT LISTEN
 function chatListen() {
   if (unsub) unsub();
+  chatRenderedMessageIds = new Set();
   let q = query(collection(db, 'restaurants', 'angies', 'chat'), orderBy('createdAt', 'asc'));
   unsub = onSnapshot(q, snap => {
     let box = $('chatBox');
-    box.textContent = '';
-    snap.forEach(d => {
-      let msg = d.data();
+    if (!box) return;
+    const changedExistingMessages = snap.docChanges().some(change => change.type !== 'added');
+    if (changedExistingMessages) {
+      box.textContent = '';
+      chatRenderedMessageIds = new Set();
+      snap.forEach(d => {
+        if (chatRenderedMessageIds.has(d.id)) return;
+        let msg = d.data();
+        const msgNode = document.createElement('div');
+        msgNode.className = 'msg';
+        const strong = document.createElement('strong');
+        strong.textContent = String(msg.name || '');
+        msgNode.appendChild(strong);
+        msgNode.append(': ' + String(msg.text || ''));
+        box.appendChild(msgNode);
+        chatRenderedMessageIds.add(d.id);
+      });
+      box.scrollTop = box.scrollHeight;
+      return;
+    }
+    snap.docChanges().forEach(change => {
+      if (change.type !== 'added' || chatRenderedMessageIds.has(change.doc.id)) return;
+      let msg = change.doc.data();
       const msgNode = document.createElement('div');
       msgNode.className = 'msg';
       const strong = document.createElement('strong');
@@ -2830,6 +3059,7 @@ function chatListen() {
       msgNode.appendChild(strong);
       msgNode.append(': ' + String(msg.text || ''));
       box.appendChild(msgNode);
+      chatRenderedMessageIds.add(change.doc.id);
     });
     box.scrollTop = box.scrollHeight;
   }, err => {
@@ -2842,6 +3072,7 @@ function stopChatListener() {
     unsub();
     unsub = null;
   }
+  chatRenderedMessageIds = new Set();
 }
 
 // SEND MESSAGE
@@ -2975,8 +3206,11 @@ window.addEventListener('load', async () => {
         syncHistoryStatsVisibility();
         showApp();
         render();
-        await tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
-        writeLog('login');
+        void tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+        scheduleBackgroundTask(() => {
+          void prefetchSessionData();
+        });
+        void writeLog('login');
         setStatus('loginStatus', '', 'info');
       } else {
         resetSectionLoadedState();
