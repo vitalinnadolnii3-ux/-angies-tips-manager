@@ -1817,7 +1817,7 @@ async function loadCurrentUserProfile(user) {
     }
   ];
 
-  const wrappedReads = profileReads.map((read, index) => Promise.resolve(read.promise)
+  const wrappedReads = profileReads.map((read, index) => read.promise
     .then(value => ({ index, status: 'fulfilled', value }))
     .catch(reason => ({ index, status: 'rejected', reason }))
   );
@@ -1860,13 +1860,15 @@ async function loadCurrentUserProfile(user) {
       return await applyUsersProfile(profile);
     }
 
-    if (!result.value.exists()) {
-      console.log('[Profilo] Profilo Firestore /employees/ non trovato — continuo race.');
-      continue;
+    if (read.key === 'employees') {
+      if (!result.value.exists()) {
+        console.log('[Profilo] Profilo Firestore /employees/ non trovato — continuo race.');
+        continue;
+      }
+      const employeeProfile = result.value.data();
+      console.log('[Profilo] Profilo Firestore /employees/ trovato:', employeeProfile);
+      return await applyEmployeesProfile(employeeProfile);
     }
-    const employeeProfile = result.value.data();
-    console.log('[Profilo] Profilo Firestore /employees/ trovato:', employeeProfile);
-    return await applyEmployeesProfile(employeeProfile);
   }
 
   // 4. Access denied: only pre-registered users can enter
