@@ -55,7 +55,6 @@ const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitch
 const MAX_TIP_AMOUNT = 100000;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
-const PRIMARY_CACHE_PREFIX = 'angiesManagerPrimaryCache';
 const sectionLoaded = {
   primary: false,
   employees: false,
@@ -91,45 +90,6 @@ function getErrorDetails(error, fallback = 'Errore sconosciuto') {
   const code = String(error?.code || '').trim();
   const message = String(error?.message || '').trim() || fallback;
   return code ? `${message} (${code})` : message;
-}
-
-function getPrimaryCacheKey() {
-  if (!currentUserUid) return '';
-  const scope = canViewGlobalTipsData() ? 'global' : 'personal';
-  return `${PRIMARY_CACHE_PREFIX}:${currentUserUid}:${scope}`;
-}
-
-function persistPrimaryCache() {
-  const key = getPrimaryCacheKey();
-  if (!key) return;
-  try {
-    localStorage.setItem(key, JSON.stringify({
-      history: Array.isArray(state.history) ? state.history : [],
-      employees: Array.isArray(state.employees) ? state.employees : [],
-      kitchenPercent: Number(state.kitchenPercent) || 20,
-      updatedAt: Date.now()
-    }));
-  } catch (e) {
-    console.warn('[Cache] Salvataggio cache principale non riuscito:', e?.message || e);
-  }
-}
-
-function restorePrimaryCache() {
-  const key = getPrimaryCacheKey();
-  if (!key) return false;
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return false;
-    if (Array.isArray(parsed.history)) state.history = parsed.history;
-    if (Array.isArray(parsed.employees) && parsed.employees.length > 0) state.employees = parsed.employees;
-    if (Number.isFinite(Number(parsed.kitchenPercent))) state.kitchenPercent = Number(parsed.kitchenPercent);
-    return true;
-  } catch (e) {
-    console.warn('[Cache] Ripristino cache principale non riuscito:', e?.message || e);
-    return false;
-  }
 }
 
 function resetSectionLoadedState() {
@@ -881,7 +841,6 @@ async function load() {
       state.history.push({ date: d.id, ...d.data() });
     });
     state.history.sort((a, b) => b.date.localeCompare(a.date));
-    persistPrimaryCache();
   } catch(e) {
     console.error('Errore caricamento:', e);
   }
@@ -2416,6 +2375,7 @@ function init() {
 
 // TAB NAVIGATION
 async function tab(id, b) {
+  const previousTab = document.querySelector('.page.active')?.id || '';
   if (id === 'employeeManagement' && !isAdmin()) {
     console.warn('Solo admin possono vedere i dipendenti.');
     notify('Non hai i permessi per accedere a questa sezione.', 'error');
@@ -2434,7 +2394,6 @@ async function tab(id, b) {
     notify('Questa vista è disponibile per i dipendenti.', 'info');
     return;
   }
-  const previousTab = document.querySelector('.page.active')?.id || '';
   if (previousTab === 'chat' && id !== 'chat') stopChatListener();
   if (['turni', 'myShifts'].includes(previousTab) && !['turni', 'myShifts'].includes(id)) stopShiftListeners();
   document.querySelectorAll('.page').forEach(p => {
@@ -2448,7 +2407,6 @@ async function tab(id, b) {
   }
   document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
   if (b) b.classList.add('active');
-  render();
   try {
     if (id === 'dashboard' || id === 'newday' || id === 'history' || id === 'stats' || id === 'settings') {
       await ensurePrimaryLoaded();
@@ -2637,7 +2595,6 @@ async function saveDay() {
   
   try {
     await setDoc(doc(db, 'restaurants', 'angies', 'days', d.date), d);
-    persistPrimaryCache();
     notify('Giornata salvata!', 'info');
     clear();
     render();
@@ -2775,7 +2732,6 @@ window.delDay = async i => {
   state.history.splice(i, 1);
   try {
     await deleteDoc(doc(db, 'restaurants', 'angies', 'days', d));
-    persistPrimaryCache();
     render();
   } catch(e) {
     console.error('Errore cancellazione:', e);
@@ -2790,7 +2746,6 @@ async function deleteAll() {
     await deleteDoc(doc(db, 'restaurants', 'angies', 'days', r.date));
   }
   state.history = [];
-  persistPrimaryCache();
   render();
 }
 
@@ -2851,7 +2806,6 @@ async function saveSettings() {
   state.employees = [...document.querySelectorAll('.emp')].map(x => x.value.trim()).filter(Boolean);
   try {
     await setDoc(doc(db, 'restaurants', 'angies', 'settings', 'main'), state);
-    persistPrimaryCache();
     notify('Impostazioni salvate!', 'info');
     render();
   } catch(e) {
@@ -3020,9 +2974,6 @@ window.addEventListener('load', async () => {
         syncSettingsTabVisibility();
         syncHistoryStatsVisibility();
         showApp();
-        if (!hasLoadedSessionData) {
-          restorePrimaryCache();
-        }
         render();
         await tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
         writeLog('login');
