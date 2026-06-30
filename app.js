@@ -655,7 +655,7 @@ function syncShiftTabVisibility() {
   const turniTabBtn = $('turniTabBtn');
   const myShiftsTabBtn = $('myShiftsTabBtn');
   if (turniTabBtn) {
-    turniTabBtn.classList.remove('hidden');
+    turniTabBtn.classList.toggle('hidden', !canManageShifts());
   }
   if (myShiftsTabBtn) {
     myShiftsTabBtn.classList.toggle('hidden', canManageShifts());
@@ -675,6 +675,23 @@ function syncSettingsTabVisibility() {
   settingsTabBtn.classList.toggle('hidden', !isAdmin());
   if (!isAdmin() && $('settings').classList.contains('active')) {
     tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+  }
+}
+
+function syncHistoryStatsVisibility() {
+  const canSee = canViewGlobalTipsData();
+  const newdayBtn = $('newdayTabBtn');
+  const histBtn = $('historyTabBtn');
+  const statsBtn = $('statsTabBtn');
+  if (newdayBtn) newdayBtn.classList.toggle('hidden', !canSee);
+  if (histBtn) histBtn.classList.toggle('hidden', !canSee);
+  if (statsBtn) statsBtn.classList.toggle('hidden', !canSee);
+  // Redirect if on a restricted tab
+  if (!canSee) {
+    const activeId = document.querySelector('.page.active')?.id;
+    if (['history', 'stats', 'newday'].includes(activeId)) {
+      tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+    }
   }
 }
 
@@ -801,6 +818,11 @@ async function loadEmployees() {
     const snap = await getDocs(employeeCollection());
     employeesData = snap.docs.map(d => ({ id: d.id, ...d.data() }))
       .sort((a, b) => normalizeName(a.name).localeCompare(normalizeName(b.name), 'it', { sensitivity: 'base' }));
+    // Sync state.employees from Firestore so Nuova Giornata / Storico use the live list
+    const activeEmps = employeesData.filter(emp => emp.enabled !== false && emp.active !== false);
+    if (activeEmps.length > 0) {
+      state.employees = activeEmps.map(emp => normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id);
+    }
     renderEmployeesTable();
   } catch (e) {
     if (e.code === 'permission-denied') {
@@ -1647,7 +1669,7 @@ function setAttendanceDateValue(dateStr) {
   if ($('attendanceDate')) $('attendanceDate').value = attendanceDate;
   const weekDates = getWeekDatesForDate(attendanceDate);
   if ($('attendanceWeekLabel')) $('attendanceWeekLabel').textContent = `${fmt(weekDates[0].date)} - ${fmt(weekDates[6].date)}`;
-  if ($('attendanceActions')) $('attendanceActions').classList.toggle('hidden', !canManageAttendance());
+  if ($('attendanceActions')) $('attendanceActions').classList.toggle('hidden', !currentUserUid);
 }
 
 function isAttendanceEntryEmpty(values) {
@@ -1725,11 +1747,13 @@ function renderAttendanceTable() {
     const workedMinutes = calculateWorkedMinutes(entryTime, exitTime, pauseMinutes);
     const comparison = getAttendanceComparison(employee.id, attendanceDate, entryTime, exitTime);
     const rowClass = comparison.status === 'alert' ? 'attendance-row attendance-row-alert' : 'attendance-row';
+    // Employees can edit their own row; admin/manager can edit all rows
+    const canEditRow = canEdit || employee.id === currentUserUid;
     html += `<tr class="${rowClass}" data-attendance-uid="${esc(employee.id)}">
       <td class="attendance-employee-cell">${esc(employee.name)}</td>
       <td class="attendance-scheduled-cell">${esc(comparison.scheduledText)}</td>
-      <td>${canEdit ? `<input data-att-field="entryTime" type="time" value="${esc(entryTime)}">` : esc(entryTime || '-')}</td>
-      <td>${canEdit ? `<input data-att-field="exitTime" type="time" value="${esc(exitTime)}">` : esc(exitTime || '-')}</td>
+      <td>${canEditRow ? `<input data-att-field="entryTime" type="time" value="${esc(entryTime)}">` : esc(entryTime || '-')}</td>
+      <td>${canEditRow ? `<input data-att-field="exitTime" type="time" value="${esc(exitTime)}">` : esc(exitTime || '-')}</td>
       <td>${canEdit ? `<input data-att-field="pauseMinutes" type="number" min="0" step="1" value="${esc(pauseMinutes)}">` : esc(pauseMinutes === '' ? '-' : pauseMinutes)}</td>
       <td>${canEdit ? `<input data-att-field="notes" type="text" value="${esc(notes)}" placeholder="Note">` : esc(notes || '-')}</td>
       <td class="attendance-worked-cell">${esc(formatWorkedHours(workedMinutes))}</td>
@@ -1840,13 +1864,15 @@ async function loadAttendanceData() {
 }
 
 async function saveAttendance() {
-  if (!canManageAttendance()) { setAttendanceStatus('Solo admin e manager possono modificare entrata e uscita.', 'error'); return; }
+  if (!currentUserUid) { setAttendanceStatus('Sessione non valida. Effettua di nuovo il login.', 'error'); return; }
   if (!attendanceDate) { setAttendanceStatus('Seleziona una data.', 'error'); return; }
   const rows = [...document.querySelectorAll('#attendanceTable tr[data-attendance-uid]')];
   if (!rows.length) return;
   try {
     await Promise.all(rows.map(async row => {
       const uid = row.getAttribute('data-attendance-uid') || '';
+      // Non-admin/manager users can only save their own row
+      if (!canManageAttendance() && uid !== currentUserUid) return;
       const values = readAttendanceRowValues(row);
       const pauseMinutes = normalizePauseMinutes(values.pauseMinutes);
       if (isAttendanceEntryEmpty({ ...values, pauseMinutes })) {
@@ -2139,6 +2165,7 @@ function init() {
   $('saveBtn').onclick = saveDay;
   $('clearBtn').onclick = () => clear();
   $('shareBtn').onclick = shareWhatsApp;
+  $('date').onchange = () => { calc(); populateHoursFromAttendance($('date').value); };
   $('export').onclick = exportCSV;
   $('deleteAll').onclick = deleteAll;
   $('send').onclick = sendMsg;
@@ -2187,7 +2214,9 @@ function init() {
   $('attendanceSaveBtn').onclick = saveAttendance;
   $('attendanceTable').oninput = e => {
     const row = e.target.closest('tr[data-attendance-uid]');
-    if (!row || !canManageAttendance()) return;
+    if (!row) return;
+    const rowUid = row.getAttribute('data-attendance-uid');
+    if (!canManageAttendance() && rowUid !== currentUserUid) return;
     updateAttendanceRow(row);
     renderAttendanceWeeklyTable();
     setAttendanceStatus('Modifiche non salvate.', 'info');
@@ -2243,6 +2272,10 @@ function tab(id, b) {
     notify('Non hai i permessi per accedere a questa sezione.', 'error');
     return;
   }
+  if ((id === 'history' || id === 'stats' || id === 'newday') && !canViewGlobalTipsData()) {
+    notify('Non hai i permessi per accedere a questa sezione.', 'error');
+    return;
+  }
   if (id === 'settings') loadUsersForAdmin();
   if (id === 'myShifts' && canManageShifts()) {
     notify('Questa vista è disponibile per i dipendenti.', 'info');
@@ -2260,6 +2293,9 @@ function tab(id, b) {
   document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
   if (b) b.classList.add('active');
   render();
+  if (id === 'newday') {
+    populateHoursFromAttendance($('date').value);
+  }
 }
 
 // SPLIT CALCULATION
@@ -2336,10 +2372,13 @@ function render() {
 
 // RENDER HOURS TABLE
 function hours() {
+  const canEdit = canViewGlobalTipsData();
   let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
   
   state.employees.forEach((n, i) => {
-    html += `<tr><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
+    const emp = employeesData.find(e => normalizeName(e.name).toLowerCase() === n.toLowerCase());
+    const empId = esc(emp?.id || '');
+    html += `<tr data-emp-id="${empId}"><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"${canEdit ? '' : ' readonly'}></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
   $('hours').innerHTML = html;
   
@@ -2417,7 +2456,34 @@ async function saveDay() {
   }
 }
 
-// SHARE ON WHATSAPP
+// AUTO-POPULATE HOURS IN NUOVA GIORNATA FROM ATTENDANCE DATA
+async function populateHoursFromAttendance(date) {
+  if (!date || !currentUserUid || !canManageAttendance()) return;
+  try {
+    const snap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
+    if (!snap.exists()) return;
+    const dayAttendance = snap.val();
+    if (!dayAttendance || typeof dayAttendance !== 'object') return;
+    const rows = document.querySelectorAll('#hours tr[data-emp-id]');
+    let anyFilled = false;
+    rows.forEach(row => {
+      const uid = row.getAttribute('data-emp-id');
+      if (!uid) return;
+      const entry = dayAttendance[uid];
+      if (!entry || entry.workedMinutes == null) return;
+      const input = row.querySelector('.hour');
+      if (!input) return;
+      const workedHours = Math.round((Number(entry.workedMinutes) / 60) * 100) / 100;
+      input.value = workedHours;
+      anyFilled = true;
+    });
+    if (anyFilled) updateHourCalculations();
+  } catch (e) {
+    console.error('[NuovaGiornata] Errore caricamento ore da attendance:', e);
+  }
+}
+
+
 function shareWhatsApp() {
   let d = data();
   try {
@@ -2740,6 +2806,7 @@ window.addEventListener('load', async () => {
           syncEmployeeTabVisibility();
           syncShiftTabVisibility();
           syncSettingsTabVisibility();
+          syncHistoryStatsVisibility();
           renderShifts();
           showLogin();
           return;
@@ -2751,6 +2818,7 @@ window.addEventListener('load', async () => {
         syncEmployeeTabVisibility();
         syncShiftTabVisibility();
         syncSettingsTabVisibility();
+        syncHistoryStatsVisibility();
         populateShiftEmployeeOptions();
         attachShiftListeners();
         render();
@@ -2820,6 +2888,7 @@ window.addEventListener('load', async () => {
         syncEmployeeTabVisibility();
         syncShiftTabVisibility();
         syncSettingsTabVisibility();
+        syncHistoryStatsVisibility();
         renderShifts();
         showLogin();
       }
