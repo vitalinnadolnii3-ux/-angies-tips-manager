@@ -1,12 +1,20 @@
 import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+import { getFirestore, initializeFirestore, persistentLocalCache, persistentSingleTabManager, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
 import { ref as rtdbRef, get as rtdbGet, set as rtdbSet, update as rtdbUpdate, remove as rtdbRemove } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
 import { firebaseConfig, getAuth, getDatabase } from "./firebase-config.js?v=13";
 
 const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
+let db;
+try {
+  db = initializeFirestore(fbApp, {
+    localCache: persistentLocalCache({ tabManager: persistentSingleTabManager() })
+  });
+} catch (cacheError) {
+  console.warn('[Firestore] Cache persistente non disponibile, uso cache standard:', cacheError?.message || cacheError);
+  db = getFirestore(fbApp);
+}
 const auth = getAuth(fbApp);
 const functions = getFunctions(fbApp);
 const rtdb = getDatabase(fbApp);
@@ -47,6 +55,18 @@ const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitch
 const MAX_TIP_AMOUNT = 100000;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
+const sectionLoaded = {
+  primary: false,
+  employees: false,
+  users: false,
+  attendance: false,
+  shifts: false
+};
+let primaryLoadPromise = null;
+let employeeLoadPromise = null;
+let userLoadPromise = null;
+let attendanceLoadPromise = null;
+let shiftLoadPromise = null;
 
 const $ = id => document.getElementById(id);
 const euro = n => new Intl.NumberFormat('it-IT', { style: 'currency', currency: 'EUR' }).format(+n || 0);
@@ -70,6 +90,19 @@ function getErrorDetails(error, fallback = 'Errore sconosciuto') {
   const code = String(error?.code || '').trim();
   const message = String(error?.message || '').trim() || fallback;
   return code ? `${message} (${code})` : message;
+}
+
+function resetSectionLoadedState() {
+  sectionLoaded.primary = false;
+  sectionLoaded.employees = false;
+  sectionLoaded.users = false;
+  sectionLoaded.attendance = false;
+  sectionLoaded.shifts = false;
+  primaryLoadPromise = null;
+  employeeLoadPromise = null;
+  userLoadPromise = null;
+  attendanceLoadPromise = null;
+  shiftLoadPromise = null;
 }
 
 function ensureFirebaseServicesReady() {
@@ -627,14 +660,25 @@ async function createAuthUserWithSecondarySession(email, password) {
 }
 
 function showLogin() {
+  $('bootScreen')?.classList.add('hidden');
   $('app').classList.add('hidden');
   $('loginScreen').classList.remove('hidden');
   $('loginEmail').focus();
 }
 
 function showApp() {
+  $('bootScreen')?.classList.add('hidden');
   $('loginScreen').classList.add('hidden');
   $('app').classList.remove('hidden');
+}
+
+function showBootLoading(message = 'Caricamento...') {
+  const bootScreen = $('bootScreen');
+  if (!bootScreen) return;
+  setStatus('bootStatus', message, 'info');
+  $('loginScreen').classList.add('hidden');
+  $('app').classList.add('hidden');
+  bootScreen.classList.remove('hidden');
 }
 
 function syncEmployeeTabVisibility() {
@@ -642,7 +686,7 @@ function syncEmployeeTabVisibility() {
   if (!tabBtn) return;
   tabBtn.classList.toggle('hidden', !isAdmin());
   if (!isAdmin() && $('employeeManagement').classList.contains('active')) {
-    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+    void tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
   // Show/hide the create form - only Admins can create employees
   const createForm = $('employeeCreateForm');
@@ -665,7 +709,7 @@ function syncShiftTabVisibility() {
     newShiftBtn.classList.toggle('hidden', !canManageShifts());
   }
   if (canManageShifts() && $('myShifts').classList.contains('active')) {
-    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+    void tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
 }
 
@@ -674,7 +718,7 @@ function syncSettingsTabVisibility() {
   if (!settingsTabBtn) return;
   settingsTabBtn.classList.toggle('hidden', !isAdmin());
   if (!isAdmin() && $('settings').classList.contains('active')) {
-    tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+    void tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
   }
 }
 
@@ -690,7 +734,7 @@ function syncHistoryStatsVisibility() {
   if (!canSee) {
     const activeId = document.querySelector('.page.active')?.id;
     if (['history', 'stats', 'newday'].includes(activeId)) {
-      tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+      void tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
     }
   }
 }
@@ -770,14 +814,9 @@ async function logout() {
   attendanceWeekEntries = {};
   attendanceShiftData = [];
   $('who').textContent = 'Online';
-  if (unsub) {
-    unsub();
-    unsub = null;
-  }
-  if (shiftsUnsub) {
-    shiftsUnsub();
-    shiftsUnsub = null;
-  }
+  stopChatListener();
+  stopShiftListeners();
+  resetSectionLoadedState();
   showLogin();
 }
 
@@ -861,6 +900,60 @@ async function loadUsersForAdmin() {
   } catch (e) {
     console.error('Errore caricamento utenti:', e);
   }
+}
+
+async function ensurePrimaryLoaded() {
+  if (sectionLoaded.primary) return;
+  if (primaryLoadPromise) return primaryLoadPromise;
+  primaryLoadPromise = withTimeout(load(), PRIMARY_LOAD_TIMEOUT_MS, 'Caricamento dati principali')
+    .then(() => {
+      sectionLoaded.primary = true;
+      hasLoadedSessionData = true;
+    })
+    .finally(() => {
+      primaryLoadPromise = null;
+    });
+  return primaryLoadPromise;
+}
+
+async function ensureEmployeesLoaded() {
+  if (sectionLoaded.employees) return;
+  if (employeeLoadPromise) return employeeLoadPromise;
+  employeeLoadPromise = withTimeout(loadEmployees(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento dipendenti')
+    .then(() => {
+      sectionLoaded.employees = true;
+    })
+    .finally(() => {
+      employeeLoadPromise = null;
+    });
+  return employeeLoadPromise;
+}
+
+async function ensureUsersLoaded() {
+  if (!isAdmin()) return;
+  if (sectionLoaded.users) return;
+  if (userLoadPromise) return userLoadPromise;
+  userLoadPromise = withTimeout(loadUsersForAdmin(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento utenti')
+    .then(() => {
+      sectionLoaded.users = true;
+    })
+    .finally(() => {
+      userLoadPromise = null;
+    });
+  return userLoadPromise;
+}
+
+async function ensureAttendanceLoaded() {
+  if (sectionLoaded.attendance) return;
+  if (attendanceLoadPromise) return attendanceLoadPromise;
+  attendanceLoadPromise = withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
+    .then(() => {
+      sectionLoaded.attendance = true;
+    })
+    .finally(() => {
+      attendanceLoadPromise = null;
+    });
+  return attendanceLoadPromise;
 }
 
 function clearEmployeeForm() {
@@ -2141,6 +2234,7 @@ function attachShiftListeners() {
   shiftsUnsub = onSnapshot(q, snap => {
     setShiftStatus('');
     shiftsData = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    sectionLoaded.shifts = true;
     renderShifts();
   }, err => {
     console.error('Errore caricamento turni:', err);
@@ -2151,6 +2245,25 @@ function attachShiftListeners() {
   });
 }
 
+function stopShiftListeners() {
+  if (shiftsUnsub) {
+    shiftsUnsub();
+    shiftsUnsub = null;
+  }
+  sectionLoaded.shifts = false;
+}
+
+async function ensureShiftsLoaded() {
+  if (sectionLoaded.shifts) return;
+  if (shiftLoadPromise) return shiftLoadPromise;
+  shiftLoadPromise = Promise.resolve().then(() => {
+    attachShiftListeners();
+  }).finally(() => {
+    shiftLoadPromise = null;
+  });
+  return shiftLoadPromise;
+}
+
 // INIT
 function init() {
   $('date').value = today();
@@ -2159,7 +2272,7 @@ function init() {
   setAttendanceDateValue(today());
   
   document.querySelectorAll('nav button').forEach(b => {
-    b.onclick = () => tab(b.dataset.tab, b);
+    b.onclick = () => { void tab(b.dataset.tab, b); };
   });
   
   $('saveBtn').onclick = saveDay;
@@ -2261,7 +2374,8 @@ function init() {
 }
 
 // TAB NAVIGATION
-function tab(id, b) {
+async function tab(id, b) {
+  const previousTab = document.querySelector('.page.active')?.id || '';
   if (id === 'employeeManagement' && !isAdmin()) {
     console.warn('Solo admin possono vedere i dipendenti.');
     notify('Non hai i permessi per accedere a questa sezione.', 'error');
@@ -2276,11 +2390,12 @@ function tab(id, b) {
     notify('Non hai i permessi per accedere a questa sezione.', 'error');
     return;
   }
-  if (id === 'settings') loadUsersForAdmin();
   if (id === 'myShifts' && canManageShifts()) {
     notify('Questa vista è disponibile per i dipendenti.', 'info');
     return;
   }
+  if (previousTab === 'chat' && id !== 'chat') stopChatListener();
+  if (['turni', 'myShifts'].includes(previousTab) && !['turni', 'myShifts'].includes(id)) stopShiftListeners();
   document.querySelectorAll('.page').forEach(p => {
     p.classList.remove('active');
     p.style.display = 'none';
@@ -2292,6 +2407,29 @@ function tab(id, b) {
   }
   document.querySelectorAll('nav button').forEach(x => x.classList.remove('active'));
   if (b) b.classList.add('active');
+  try {
+    if (id === 'dashboard' || id === 'newday' || id === 'history' || id === 'stats' || id === 'settings') {
+      await ensurePrimaryLoaded();
+    }
+    if (id === 'newday' || id === 'employeeManagement' || (id === 'attendance' && canManageAttendance()) || (id === 'turni' && canManageShifts())) {
+      await ensureEmployeesLoaded();
+    }
+    if (id === 'settings') {
+      await ensureUsersLoaded();
+    }
+    if (id === 'attendance') {
+      await ensureAttendanceLoaded();
+    }
+    if (id === 'turni' || id === 'myShifts') {
+      await ensureShiftsLoaded();
+    }
+    if (id === 'chat') {
+      chatListen();
+    }
+  } catch (e) {
+    console.error(`[Tab] Errore caricamento sezione ${id}:`, e);
+    notify(getErrorDetails(e, 'Errore durante il caricamento della sezione.'), 'error');
+  }
   render();
   if (id === 'newday') {
     populateHoursFromAttendance($('date').value);
@@ -2358,16 +2496,22 @@ function updateDashboardLabels() {
 
 // RENDER ALL
 function render() {
-  hours();
-  calc();
-  dash();
-  history();
-  stats();
-  settings();
-  renderEmployeesTable();
-  renderUsersTable();
-  renderShifts();
-  renderAttendance();
+  const activeId = document.querySelector('.page.active')?.id || 'dashboard';
+  updateDashboardLabels();
+  if (activeId === 'dashboard') dash();
+  if (activeId === 'newday') {
+    hours();
+    calc();
+  }
+  if (activeId === 'history') history();
+  if (activeId === 'stats') stats();
+  if (activeId === 'settings') {
+    settings();
+    renderUsersTable();
+  }
+  if (activeId === 'employeeManagement') renderEmployeesTable();
+  if (activeId === 'turni' || activeId === 'myShifts') renderShifts();
+  if (activeId === 'attendance') renderAttendance();
 }
 
 // RENDER HOURS TABLE
@@ -2693,6 +2837,13 @@ function chatListen() {
   });
 }
 
+function stopChatListener() {
+  if (unsub) {
+    unsub();
+    unsub = null;
+  }
+}
+
 // SEND MESSAGE
 async function sendMsg() {
   let text = $('msg').value.trim();
@@ -2763,7 +2914,7 @@ function fmt(d) {
 window.addEventListener('load', async () => {
   init();
   clearEmployeeForm();
-  render();
+  showBootLoading('Caricamento...');
   onAuthStateChanged(auth, async user => {
     try {
       ensureFirebaseServicesReady();
@@ -2788,6 +2939,7 @@ window.addEventListener('load', async () => {
           }
         }
         if (!loadedProfile) {
+          resetSectionLoadedState();
           hasLoadedSessionData = false;
           localStorage.removeItem(SESSION_KEY);
           currentUser = '';
@@ -2800,10 +2952,8 @@ window.addEventListener('load', async () => {
           attendanceDayEntries = {};
           attendanceWeekEntries = {};
           attendanceShiftData = [];
-          if (shiftsUnsub) {
-            shiftsUnsub();
-            shiftsUnsub = null;
-          }
+          stopShiftListeners();
+          stopChatListener();
           $('who').textContent = 'Online';
           clearEmployeeForm();
           clearShiftEditor();
@@ -2811,7 +2961,7 @@ window.addEventListener('load', async () => {
           syncShiftTabVisibility();
           syncSettingsTabVisibility();
           syncHistoryStatsVisibility();
-          renderShifts();
+          render();
           showLogin();
           return;
         }
@@ -2823,47 +2973,13 @@ window.addEventListener('load', async () => {
         syncShiftTabVisibility();
         syncSettingsTabVisibility();
         syncHistoryStatsVisibility();
-        populateShiftEmployeeOptions();
-        attachShiftListeners();
-        render();
         showApp();
-        tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
-        chatListen();
-        writeLog('login');
-
-        const startupTasks = [];
-        if (!hasLoadedSessionData) {
-          startupTasks.push(
-            {
-              label: 'Caricamento dati principali',
-              promise: withTimeout(load(), PRIMARY_LOAD_TIMEOUT_MS, 'Caricamento dati principali')
-                .then(() => { hasLoadedSessionData = true; })
-            }
-          );
-        }
-        startupTasks.push({
-          label: 'Caricamento dipendenti',
-          promise: withTimeout(loadEmployees(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento dipendenti')
-        });
-        startupTasks.push({
-          label: 'Caricamento entrata e uscita',
-          promise: withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
-        });
-        const startupResults = await Promise.allSettled(startupTasks.map(task => task.promise));
-        const startupErrors = startupResults
-          .map((result, index) => {
-            if (result.status !== 'rejected') return '';
-            return `${startupTasks[index].label}: ${result.reason?.message || 'Errore non dettagliato'}`;
-          })
-          .filter(Boolean);
-        if (startupErrors.length) {
-          console.warn('[Auth] Alcuni caricamenti post-login non sono riusciti:', startupErrors, startupResults);
-          setStatus('loginStatus', `Accesso completato con avvisi: ${startupErrors.join(' | ')}`, 'error');
-        } else {
-          setStatus('loginStatus', '', 'info');
-        }
         render();
+        await tab('dashboard', document.querySelector('nav button[data-tab="dashboard"]'));
+        writeLog('login');
+        setStatus('loginStatus', '', 'info');
       } else {
+        resetSectionLoadedState();
         hasLoadedSessionData = false;
         localStorage.removeItem(SESSION_KEY);
         currentUser = '';
@@ -2879,21 +2995,15 @@ window.addEventListener('load', async () => {
         attendanceWeekEntries = {};
         attendanceShiftData = [];
         $('who').textContent = 'Online';
-        if (unsub) {
-          unsub();
-          unsub = null;
-        }
-        if (shiftsUnsub) {
-          shiftsUnsub();
-          shiftsUnsub = null;
-        }
+        stopChatListener();
+        stopShiftListeners();
         clearEmployeeForm();
         clearShiftEditor();
         syncEmployeeTabVisibility();
         syncShiftTabVisibility();
         syncSettingsTabVisibility();
         syncHistoryStatsVisibility();
-        renderShifts();
+        render();
         showLogin();
       }
     } catch (e) {
@@ -2901,6 +3011,7 @@ window.addEventListener('load', async () => {
       const detail = getErrorDetails(e, 'Errore imprevisto durante il login.');
       setStatus('loginStatus', `Login fallito: ${detail}`, 'error');
       showLogin();
+      resetSectionLoadedState();
       hasLoadedSessionData = false;
       localStorage.removeItem(SESSION_KEY);
     }
