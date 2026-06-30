@@ -1366,8 +1366,9 @@ async function createEmployee() {
       appRole: data.normalizedAppRole,
       active: nextActive
     });
+    const currentUserRecord = usersData.find(user => user.id === uid) || {};
     upsertEmployeeCache(nextEmployee);
-    upsertUserCache(buildLocalUserRecord(uid, nextEmployee));
+    upsertUserCache(buildLocalUserRecord(uid, nextEmployee, currentUserRecord));
     void writeLog(`employee_create:${data.normalizedEmail}:${data.normalizedAppRole}`);
     clearEmployeeForm();
     renderEmployeesTable();
