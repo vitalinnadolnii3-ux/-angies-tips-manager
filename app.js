@@ -1818,8 +1818,7 @@ async function loadCurrentUserProfile(user) {
   ];
 
   const wrappedReads = profileReads.map(read => {
-    let wrapped;
-    wrapped = Promise.resolve(read.promise)
+    const wrapped = Promise.resolve(read.promise)
       .then(value => ({ wrapped, read, status: 'fulfilled', value }))
       .catch(reason => ({ wrapped, read, status: 'rejected', reason }));
     return wrapped;
@@ -1860,6 +1859,10 @@ async function loadCurrentUserProfile(user) {
       const profile = result.value.data();
       console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
       return await applyUsersProfile(profile);
+    }
+
+    if (result.read.key !== 'employees') {
+      continue;
     }
 
     if (!result.value.exists()) {
