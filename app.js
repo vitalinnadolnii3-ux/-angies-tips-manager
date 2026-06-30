@@ -50,6 +50,7 @@ const MINUTES_PER_DAY = 24 * 60;
 const PROFILE_LOAD_TIMEOUT_MS = 5000;
 const PRIMARY_LOAD_TIMEOUT_MS = 5000;
 const SECONDARY_LOAD_TIMEOUT_MS = 3000;
+const ATTENDANCE_LOAD_TIMEOUT_MS = 15000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
@@ -1102,9 +1103,13 @@ async function ensureUsersLoaded() {
 async function ensureAttendanceLoaded() {
   if (sectionLoaded.attendance) return;
   if (attendanceLoadPromise) return attendanceLoadPromise;
-  attendanceLoadPromise = withTimeout(loadAttendanceData(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
+  attendanceLoadPromise = withTimeout(loadAttendanceData(), ATTENDANCE_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
     .then(() => {
       sectionLoaded.attendance = true;
+    })
+    .catch(e => {
+      setAttendanceStatus('Caricamento lento — riprova toccando la scheda "Entrata e uscita".', 'error');
+      throw e;
     })
     .finally(() => {
       attendanceLoadPromise = null;
