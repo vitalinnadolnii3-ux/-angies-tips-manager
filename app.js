@@ -2373,10 +2373,14 @@ function render() {
 // RENDER HOURS TABLE
 function hours() {
   const canEdit = canViewGlobalTipsData();
+  // Build a map for O(n) employee lookup by normalized name
+  const empNameMap = new Map(
+    employeesData.map(e => [normalizeName(e.name).toLowerCase(), e])
+  );
   let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
   
   state.employees.forEach((n, i) => {
-    const emp = employeesData.find(e => normalizeName(e.name).toLowerCase() === n.toLowerCase());
+    const emp = empNameMap.get(n.toLowerCase());
     const empId = esc(emp?.id || '');
     html += `<tr data-emp-id="${empId}"><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"${canEdit ? '' : ' readonly'}></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
@@ -2458,7 +2462,7 @@ async function saveDay() {
 
 // AUTO-POPULATE HOURS IN NUOVA GIORNATA FROM ATTENDANCE DATA
 async function populateHoursFromAttendance(date) {
-  if (!date || !currentUserUid || !canManageAttendance()) return;
+  if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
   try {
     const snap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
     if (!snap.exists()) return;
