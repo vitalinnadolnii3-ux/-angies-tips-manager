@@ -49,7 +49,7 @@ const LONG_SHIFT_MIN_HOURS = 7.5;
 const MINUTES_PER_DAY = 24 * 60;
 const PROFILE_LOAD_TIMEOUT_MS = 30000;
 const PRIMARY_LOAD_TIMEOUT_MS = 30000;
-const SECONDARY_LOAD_TIMEOUT_MS = 25000;
+const SECONDARY_LOAD_TIMEOUT_MS = 8000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
@@ -65,6 +65,8 @@ const sectionLoaded = {
 let primaryLoadPromise = null;
 let employeeLoadPromise = null;
 let userLoadPromise = null;
+let usersLoadError = null;
+let usersLoading = false;
 let attendanceLoadPromise = null;
 let shiftLoadPromise = null;
 let sessionPrefetchPromise = null;
@@ -106,6 +108,8 @@ function resetSectionLoadedState() {
   primaryLoadPromise = null;
   employeeLoadPromise = null;
   userLoadPromise = null;
+  usersLoadError = null;
+  usersLoading = false;
   attendanceLoadPromise = null;
   shiftLoadPromise = null;
   sessionPrefetchPromise = null;
@@ -1022,10 +1026,11 @@ async function loadEmployees() {
   }
 }
 
+// NOTE: This function should only be called via ensureUsersLoaded() to ensure
+// renderUsersTable() is called after loading (handled in ensureUsersLoaded's .finally).
 async function loadUsersForAdmin() {
   if (!isAdmin()) {
     usersData = [];
-    renderUsersTable();
     return;
   }
   try {
@@ -1034,15 +1039,14 @@ async function loadUsersForAdmin() {
     if (rtdbSnap.exists()) {
       const rtdbVal = rtdbSnap.val();
       setUsersCache(Object.entries(rtdbVal).map(([id, data]) => ({ id, ...data })));
-      renderUsersTable();
       return;
     }
     // Fall back to Firestore /users/ collection
     const snap = await getDocs(usersCollection());
     setUsersCache(snap.docs.map(d => ({ id: d.id, ...d.data() })));
-    renderUsersTable();
   } catch (e) {
     console.error('Errore caricamento utenti:', e);
+    throw e;
   }
 }
 
@@ -1077,12 +1081,20 @@ async function ensureUsersLoaded() {
   if (!isAdmin()) return;
   if (sectionLoaded.users) return;
   if (userLoadPromise) return userLoadPromise;
+  usersLoadError = null;
+  usersLoading = true;
   userLoadPromise = withTimeout(loadUsersForAdmin(), SECONDARY_LOAD_TIMEOUT_MS, 'Caricamento utenti')
     .then(() => {
       sectionLoaded.users = true;
     })
+    .catch(e => {
+      usersLoadError = getErrorDetails(e, 'Errore nel caricamento utenti.');
+      console.error('[Users] Errore caricamento utenti (non bloccante):', usersLoadError);
+    })
     .finally(() => {
+      usersLoading = false;
       userLoadPromise = null;
+      renderUsersTable();
     });
   return userLoadPromise;
 }
@@ -1156,6 +1168,14 @@ function renderUsersTable() {
   if (!table) return;
   if (!isAdmin()) {
     table.innerHTML = '<tr><td colspan="5">Accesso consentito solo agli admin.</td></tr>';
+    return;
+  }
+  if (usersLoading) {
+    table.innerHTML = '<tr><td colspan="5">Caricamento utenti in corso…</td></tr>';
+    return;
+  }
+  if (usersLoadError && !usersData.length) {
+    table.innerHTML = `<tr><td colspan="5">Errore: ${esc(usersLoadError)}</td></tr>`;
     return;
   }
   let html = '<tr><th>Nome</th><th>Email</th><th>Ruolo</th><th>Stato</th><th>Azioni</th></tr>';
@@ -2633,7 +2653,8 @@ async function tab(id, b) {
       loadTasks.push(ensureEmployeesLoaded());
     }
     if (id === 'settings') {
-      loadTasks.push(ensureUsersLoaded());
+      // Fire user loading in background — tab renders immediately, table updates when ready
+      void ensureUsersLoaded();
     }
     if (id === 'attendance') {
       loadTasks.push(ensureAttendanceLoaded());
