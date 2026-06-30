@@ -47,9 +47,9 @@ const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
 const MINUTES_PER_DAY = 24 * 60;
-const PROFILE_LOAD_TIMEOUT_MS = 30000;
-const PRIMARY_LOAD_TIMEOUT_MS = 30000;
-const SECONDARY_LOAD_TIMEOUT_MS = 8000;
+const PROFILE_LOAD_TIMEOUT_MS = 5000;
+const PRIMARY_LOAD_TIMEOUT_MS = 5000;
+const SECONDARY_LOAD_TIMEOUT_MS = 3000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
@@ -1709,42 +1709,17 @@ async function loadCurrentUserProfile(user) {
   currentUserRole = '';
   const bootstrapAdmin = isBootstrapAdminEmail(user.email);
   console.log('[Profilo] Caricamento profilo per:', currentUser, '| uid:', currentUserUid, '| bootstrap admin:', bootstrapAdmin);
-
-  // Fire all 3 reads in parallel for faster profile loading
-  console.log('[Profilo] Avvio lettura parallela da RTDB, Firestore /users/, Firestore /employees/…');
-  const [rtdbResult, usersResult, employeesResult] = await Promise.allSettled([
-    withRetry(() => rtdbGet(rtdbUser(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'RTDB users/' + currentUserUid),
-    withRetry(() => getDoc(userDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /users/' + currentUserUid),
-    withRetry(() => getDoc(employeeDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /employees/' + currentUserUid)
-  ]);
-
-  // 1. Try Realtime Database users/{uid} (primary RBAC source)
-  let rtdbProfile = null;
-  if (rtdbResult.status === 'fulfilled') {
-    const rtdbSnap = rtdbResult.value;
-    if (rtdbSnap.exists()) {
-      rtdbProfile = rtdbSnap.val();
-      console.log('[Profilo] Profilo RTDB trovato:', rtdbProfile);
-    } else {
-      console.log('[Profilo] Profilo RTDB non trovato — provo Firestore.');
-    }
-  } else {
-    console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', rtdbResult.reason?.code, rtdbResult.reason?.message);
-    setStatus('loginStatus', 'Avviso RTDB: ' + getErrorDetails(rtdbResult.reason) + ' — uso profilo alternativo.', 'info');
+  if (bootstrapAdmin) {
+    currentUserName = BOOTSTRAP_ADMIN_DEFAULT_NAMES[normalizeEmail(user.email)] || currentUserName;
+    currentUserRole = 'admin';
+    setStatus('loginStatus', 'Accesso admin bootstrap immediato attivato.', 'info');
+    ensureBootstrapAdminProfile(user, { name: currentUserName, email: currentUser }).catch(syncErr => {
+      console.warn('[Profilo] Sincronizzazione profilo admin in background non riuscita:', syncErr.message);
+    });
+    return true;
   }
 
-  if (rtdbProfile !== null) {
-    const bootstrapProfile = {
-      name: normalizeName(rtdbProfile.name) || currentUserName,
-      email: currentUser
-    };
-    if (bootstrapAdmin) {
-      const syncedProfile = await ensureBootstrapAdminProfile(user, bootstrapProfile);
-      currentUserName = syncedProfile.name;
-      currentUserRole = 'admin';
-      console.log('[Profilo] Accesso admin bootstrap riuscito da RTDB.');
-      return true;
-    }
+  const applyRtdbProfile = async (rtdbProfile) => {
     const active = rtdbProfile.active !== false;
     if (!active) {
       console.warn('[Profilo] Account disattivato (RTDB) per uid:', currentUserUid);
@@ -1761,99 +1736,139 @@ async function loadCurrentUserProfile(user) {
     }
     console.log('[Profilo] Login da RTDB riuscito. Ruolo:', currentUserRole);
     return true;
-  }
+  };
 
-  // 2. Try Firestore /users/ collection
-  if (usersResult.status === 'fulfilled') {
-    const userSnap = usersResult.value;
-    if (userSnap.exists()) {
-      const profile = userSnap.data();
+  const applyUsersProfile = async (profile) => {
+    const active = profile.active !== false;
+    if (!active) {
+      setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
+      await signOut(auth);
+      return false;
+    }
+    currentUserName = normalizeName(profile.name) || currentUserName;
+    currentUserRole = profile.role || 'waiter';
+    try {
+      await writeUserToRTDB(user.uid, profile);
+      console.log('[Profilo] Migrazione a RTDB riuscita.');
+    } catch (e) {
+      console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', e.message);
+    }
+    console.log('[Profilo] Login da Firestore /users/ riuscito. Ruolo:', currentUserRole);
+    return true;
+  };
+
+  const applyEmployeesProfile = async (profile) => {
+    const enabled = profile.enabled !== false && profile.active !== false;
+    if (!enabled) {
+      setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
+      await signOut(auth);
+      return false;
+    }
+    currentUserName = normalizeName(profile.name) || currentUserName;
+    currentUserRole = normalizeStoredRole(profile.appRole || profile.role || 'waiter');
+    const resolvedRole = normalizeStoredRole(currentUserRole);
+    const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
+    try {
+      await writeUserToRTDB(user.uid, {
+        name: currentUserName,
+        email: currentUser,
+        role: resolvedRole,
+        active: enabled
+      });
+    } catch (rtErr) {
+      console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', getErrorDetails(rtErr));
+    }
+    try {
+      await setDoc(userDoc(user.uid), {
+        name: currentUserName,
+        surname: profile.surname || '',
+        email: currentUser,
+        phone: profile.phone || '',
+        restaurantRole: profile.restaurantRole || '',
+        appRole: resolvedAppRole,
+        role: resolvedRole,
+        status: getEmployeeStatusLabel(enabled),
+        active: enabled,
+        updatedAt: serverTimestamp()
+      }, { merge: true });
+    } catch (fsErr) {
+      console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', getErrorDetails(fsErr));
+    }
+    console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
+    return true;
+  };
+
+  console.log('[Profilo] Avvio lettura parallela con race da RTDB, Firestore /users/, Firestore /employees/…');
+  const profileReads = [
+    {
+      key: 'rtdb',
+      label: 'RTDB users/' + currentUserUid,
+      promise: withRetry(() => rtdbGet(rtdbUser(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'RTDB users/' + currentUserUid)
+    },
+    {
+      key: 'users',
+      label: 'Firestore /users/' + currentUserUid,
+      promise: withRetry(() => getDoc(userDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /users/' + currentUserUid)
+    },
+    {
+      key: 'employees',
+      label: 'Firestore /employees/' + currentUserUid,
+      promise: withRetry(() => getDoc(employeeDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /employees/' + currentUserUid)
+    }
+  ];
+
+  const wrappedReads = profileReads.map(read => {
+    let wrapped;
+    wrapped = Promise.resolve(read.promise)
+      .then(value => ({ wrapped, read, status: 'fulfilled', value }))
+      .catch(reason => ({ wrapped, read, status: 'rejected', reason }));
+    return wrapped;
+  });
+  const pendingReads = new Set(wrappedReads);
+
+  while (pendingReads.size) {
+    const result = await Promise.race(Array.from(pendingReads));
+    pendingReads.delete(result.wrapped);
+
+    if (result.status === 'rejected') {
+      if (result.read.key === 'rtdb') {
+        console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
+        setStatus('loginStatus', 'Avviso RTDB: ' + getErrorDetails(result.reason) + ' — uso profilo alternativo.', 'info');
+      } else if (result.read.key === 'users') {
+        console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
+      } else {
+        console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
+      }
+      continue;
+    }
+
+    if (result.read.key === 'rtdb') {
+      if (!result.value.exists()) {
+        console.log('[Profilo] Profilo RTDB non trovato — continuo race con Firestore.');
+        continue;
+      }
+      const rtdbProfile = result.value.val();
+      console.log('[Profilo] Profilo RTDB trovato:', rtdbProfile);
+      return await applyRtdbProfile(rtdbProfile);
+    }
+
+    if (result.read.key === 'users') {
+      if (!result.value.exists()) {
+        console.log('[Profilo] Profilo Firestore /users/ non trovato — continuo race.');
+        continue;
+      }
+      const profile = result.value.data();
       console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
-      if (bootstrapAdmin) {
-        const syncedProfile = await ensureBootstrapAdminProfile(user, profile);
-        currentUserName = syncedProfile.name;
-        currentUserRole = 'admin';
-        console.log('[Profilo] Accesso admin bootstrap riuscito da Firestore /users/.');
-        return true;
-      }
-      const active = profile.active !== false;
-      if (!active) {
-        setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
-        await signOut(auth);
-        return false;
-      }
-      currentUserName = normalizeName(profile.name) || currentUserName;
-      currentUserRole = profile.role || 'waiter';
-      // Try to migrate to RTDB for future logins
-      try {
-        await writeUserToRTDB(user.uid, profile);
-        console.log('[Profilo] Migrazione a RTDB riuscita.');
-      } catch (e) {
-        console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', e.message);
-      }
-      console.log('[Profilo] Login da Firestore /users/ riuscito. Ruolo:', currentUserRole);
-      return true;
+      return await applyUsersProfile(profile);
     }
-    console.log('[Profilo] Profilo Firestore /users/ non trovato — provo /employees/.');
-  } else {
-    console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', usersResult.reason?.code, usersResult.reason?.message);
-  }
 
-  // 3. Try Firestore /employees/ collection
-  if (employeesResult.status === 'fulfilled') {
-    const profileSnap = employeesResult.value;
-    if (profileSnap.exists()) {
-      const profile = profileSnap.data();
-      console.log('[Profilo] Profilo Firestore /employees/ trovato:', profile);
-      if (bootstrapAdmin) {
-        const syncedProfile = await ensureBootstrapAdminProfile(user, profile);
-        currentUserName = syncedProfile.name;
-        currentUserRole = 'admin';
-        console.log('[Profilo] Accesso admin bootstrap riuscito da Firestore /employees/.');
-        return true;
-      }
-      const enabled = profile.enabled !== false && profile.active !== false;
-      if (!enabled) {
-        setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
-        await signOut(auth);
-        return false;
-      }
-      currentUserName = normalizeName(profile.name) || currentUserName;
-      currentUserRole = normalizeStoredRole(profile.appRole || profile.role || 'waiter');
-      const resolvedRole = normalizeStoredRole(currentUserRole);
-      const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
-      try {
-        await writeUserToRTDB(user.uid, {
-          name: currentUserName,
-          email: currentUser,
-          role: resolvedRole,
-          active: enabled
-        });
-      } catch (rtErr) {
-        console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', getErrorDetails(rtErr));
-      }
-      try {
-        await setDoc(userDoc(user.uid), {
-          name: currentUserName,
-          surname: profile.surname || '',
-          email: currentUser,
-          phone: profile.phone || '',
-          restaurantRole: profile.restaurantRole || '',
-          appRole: resolvedAppRole,
-          role: resolvedRole,
-          status: getEmployeeStatusLabel(enabled),
-          active: enabled,
-          updatedAt: serverTimestamp()
-        }, { merge: true });
-      } catch (fsErr) {
-        console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', getErrorDetails(fsErr));
-      }
-      console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
-      return true;
+    if (!result.value.exists()) {
+      console.log('[Profilo] Profilo Firestore /employees/ non trovato — continuo race.');
+      continue;
     }
-    console.log('[Profilo] Profilo Firestore /employees/ non trovato — creo profilo automatico.');
-  } else {
-    console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', employeesResult.reason?.code, employeesResult.reason?.message);
+    const employeeProfile = result.value.data();
+    console.log('[Profilo] Profilo Firestore /employees/ trovato:', employeeProfile);
+    return await applyEmployeesProfile(employeeProfile);
   }
 
   // 4. Access denied: only pre-registered users can enter
