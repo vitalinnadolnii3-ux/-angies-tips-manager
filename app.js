@@ -47,9 +47,9 @@ const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
 const MINUTES_PER_DAY = 24 * 60;
-const PROFILE_LOAD_TIMEOUT_MS = 5000;
-const PRIMARY_LOAD_TIMEOUT_MS = 5000;
-const SECONDARY_LOAD_TIMEOUT_MS = 3000;
+const PROFILE_LOAD_TIMEOUT_MS = 3000;
+const PRIMARY_LOAD_TIMEOUT_MS = 3000;
+const SECONDARY_LOAD_TIMEOUT_MS = 2000;
 const ATTENDANCE_LOAD_TIMEOUT_MS = 15000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
@@ -1752,12 +1752,11 @@ async function loadCurrentUserProfile(user) {
     }
     currentUserName = normalizeName(profile.name) || currentUserName;
     currentUserRole = profile.role || 'waiter';
-    try {
-      await writeUserToRTDB(user.uid, profile);
+    writeUserToRTDB(user.uid, profile).then(() => {
       console.log('[Profilo] Migrazione a RTDB riuscita.');
-    } catch (e) {
-      console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', e.message);
-    }
+    }).catch(e => {
+      console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', getErrorDetails(e));
+    });
     console.log('[Profilo] Login da Firestore /users/ riuscito. Ruolo:', currentUserRole);
     return true;
   };
@@ -1773,32 +1772,28 @@ async function loadCurrentUserProfile(user) {
     currentUserRole = normalizeStoredRole(profile.appRole || profile.role || 'waiter');
     const resolvedRole = normalizeStoredRole(currentUserRole);
     const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
-    try {
-      await writeUserToRTDB(user.uid, {
-        name: currentUserName,
-        email: currentUser,
-        role: resolvedRole,
-        active: enabled
-      });
-    } catch (rtErr) {
+    writeUserToRTDB(user.uid, {
+      name: currentUserName,
+      email: currentUser,
+      role: resolvedRole,
+      active: enabled
+    }).catch(rtErr => {
       console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', getErrorDetails(rtErr));
-    }
-    try {
-      await setDoc(userDoc(user.uid), {
-        name: currentUserName,
-        surname: profile.surname || '',
-        email: currentUser,
-        phone: profile.phone || '',
-        restaurantRole: profile.restaurantRole || '',
-        appRole: resolvedAppRole,
-        role: resolvedRole,
-        status: getEmployeeStatusLabel(enabled),
-        active: enabled,
-        updatedAt: serverTimestamp()
-      }, { merge: true });
-    } catch (fsErr) {
+    });
+    setDoc(userDoc(user.uid), {
+      name: currentUserName,
+      surname: profile.surname || '',
+      email: currentUser,
+      phone: profile.phone || '',
+      restaurantRole: profile.restaurantRole || '',
+      appRole: resolvedAppRole,
+      role: resolvedRole,
+      status: getEmployeeStatusLabel(enabled),
+      active: enabled,
+      updatedAt: serverTimestamp()
+    }, { merge: true }).catch(fsErr => {
       console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', getErrorDetails(fsErr));
-    }
+    });
     console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
     return true;
   };
