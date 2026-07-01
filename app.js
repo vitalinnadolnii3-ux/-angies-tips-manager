@@ -1561,14 +1561,45 @@ async function resetEmployeePassword(id) {
   if (!email || !isValidEmailFormat(email)) { notify('Il dipendente non ha un indirizzo email valido.', 'error'); return; }
   if (!confirm(`Reimpostare la password di ${employee.name || email}?`)) return;
 
+  // Try to generate a direct clickable link via Cloud Function first.
+  let resetLink = null;
   try {
-    await sendPasswordResetEmail(auth, email);
-    void writeLog(`employee_password_reset:${employee.id}:email`);
-    notify(`Email di reset inviata a ${email}.`, 'info');
-  } catch (e) {
-    console.error('Errore invio email reset password:', e);
-    notify('Impossibile reimpostare la password: ' + getErrorDetails(e), 'error');
+    const result = await callEmployeeAdminFunction('generatePasswordResetLink', { email });
+    resetLink = result?.data?.link;
+  } catch (linkErr) {
+    console.warn('[Reset password] generatePasswordResetLink non disponibile, uso email standard:', linkErr?.message || linkErr);
   }
+
+  if (resetLink) {
+    showResetLinkModal(resetLink, employee.name || email);
+    void writeLog(`employee_password_reset:${employee.id}:link`);
+  } else {
+    try {
+      await sendPasswordResetEmail(auth, email);
+      void writeLog(`employee_password_reset:${employee.id}:email`);
+      notify(`Email di reset inviata a ${email}.`, 'info');
+    } catch (e) {
+      console.error('Errore invio email reset password:', e);
+      notify('Impossibile reimpostare la password: ' + getErrorDetails(e), 'error');
+    }
+  }
+}
+
+function showResetLinkModal(link, name) {
+  const anchor = $('resetLinkAnchor');
+  if (anchor) {
+    anchor.href = link;
+    anchor.textContent = `Apri il link di reset per ${esc(name)}`;
+  }
+  setStatus('resetLinkStatus', '', 'info');
+  $('resetLinkModal')?.classList.remove('hidden');
+}
+
+function closeResetLinkModal() {
+  const anchor = $('resetLinkAnchor');
+  if (anchor) anchor.href = '#';
+  setStatus('resetLinkStatus', '', 'info');
+  $('resetLinkModal')?.classList.add('hidden');
 }
 
 function editEmployee(id) {
@@ -2541,6 +2572,19 @@ function init() {
   $('modalEmpDeleteBtn').onclick = deleteEmployeeFromModal;
   $('modalEmpCloseBtn').onclick = closeEmployeeModal;
   $('employeeModal').onclick = e => { if (e.target === $('employeeModal')) closeEmployeeModal(); };
+  $('resetLinkCopyBtn').onclick = async () => {
+    const anchor = $('resetLinkAnchor');
+    const link = anchor?.href;
+    if (!link || link === '#' || link === window.location.href) return;
+    try {
+      await navigator.clipboard.writeText(link);
+      setStatus('resetLinkStatus', 'Link copiato negli appunti!', 'info');
+    } catch {
+      setStatus('resetLinkStatus', 'Impossibile copiare — seleziona il link manualmente.', 'error');
+    }
+  };
+  $('resetLinkCloseBtn').onclick = closeResetLinkModal;
+  $('resetLinkModal').onclick = e => { if (e.target === $('resetLinkModal')) closeResetLinkModal(); };
   $('shiftPrevWeekBtn').onclick = () => { weekOffset -= 1; clearShiftEditor(); attachShiftListeners(); };
   $('shiftCurrentWeekBtn').onclick = () => { weekOffset = 0; clearShiftEditor(); attachShiftListeners(); };
   $('shiftNextWeekBtn').onclick = () => { weekOffset += 1; clearShiftEditor(); attachShiftListeners(); };
