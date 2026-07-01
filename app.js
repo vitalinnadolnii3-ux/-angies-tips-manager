@@ -2249,6 +2249,10 @@ async function reloadAttendanceAfterMutation(date, successMessage) {
   } else if (attendanceLoadedWeekStart === weekStart) {
     await refreshAttendanceState(getWeekDatesForDate(date), successMessage);
   }
+  // Log i dati riletti dallo stato locale dopo il reload
+  const entryRiletta = (attendanceWeekEntries?.[date] || {});
+  console.log('[Attendance] RELOAD dati riletti per date', date, ':', JSON.stringify(entryRiletta));
+  // Aggiorna Nuova Giornata se è la pagina attiva e la data corrisponde
   if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
     await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
   }
@@ -2519,34 +2523,41 @@ async function saveAttendanceEntry(options = {}) {
   const exitTime2 = isRestDay ? '' : String($('attExit2')?.value || '').trim();
   const notes = String($('attNotes')?.value || '').trim();
   const employee = getAttendanceEmployees().find(e => e.id === uid);
+  const employeeName = employee?.name || '';
   const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
-  const workedMinutes = calcEntryWorkedMinutes(entryForCalc);
-  const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
+  const workedMinutes = isRestDay ? 0 : calcEntryWorkedMinutes(entryForCalc);
+  const workedHours = isRestDay ? 0 : Math.round((workedMinutes / 60) * 100) / 100;
   const payload = {
     uid,
-    employeeName: employee?.name || '',
+    employeeName,
     date,
+    weekStart,
     entryTime1,
     exitTime1,
     entryTime2,
     exitTime2,
     isRestDay,
     workedHours,
+    workedMinutes,
     notes,
     updatedAt: new Date().toISOString(),
     updatedBy: currentUserUid
   };
   const savePath = attendanceV2Path(weekStart, date, uid);
-  console.log('[Attendance] SAVE path:', savePath);
-  console.log('[Attendance] SAVE workedHours calcolate:', workedHours, '| minuti:', workedMinutes);
-  console.log('[Attendance] SAVE payload:', JSON.stringify(payload));
+  console.log('[Attendance] SAVE uid:', uid, '| employeeName:', employeeName, '| date:', date, '| weekStart:', weekStart);
+  console.log('[Attendance] SAVE path RTDB:', savePath);
+  console.log('[Attendance] SAVE workedHours:', workedHours, '| workedMinutes:', workedMinutes, '| isRestDay:', isRestDay);
+  console.log('[Attendance] SAVE dati salvati:', JSON.stringify(payload));
   try {
     await rtdbSet(rtdbRef(rtdb, savePath), payload);
     console.log('[Attendance] SAVE Firebase OK per path:', savePath);
+    // Aggiorna subito lo stato locale e ridisegna la tabella (ottimistic update)
     if (!attendanceWeekEntries[date]) attendanceWeekEntries[date] = {};
     attendanceWeekEntries[date][uid] = payload;
+    renderAttendanceTable();
     void writeLog(`attendance_save:${date}:${uid}`);
     closeAttendanceEditor();
+    // Ricarica da Firebase e aggiorna tabella + Nuova giornata se aperta
     await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
     if (silentSuccess) setAttendanceStatus('');
     return true;
