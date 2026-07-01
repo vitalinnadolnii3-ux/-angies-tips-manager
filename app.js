@@ -2354,6 +2354,7 @@ function renderShiftTable(tableId, allowEdit) {
       const shiftText = getShiftDisplayText(shift);
       const cls = shift ? classifyShift(shift) : { type: 'shift-empty', total: '' };
       if (cls.total) totals[index][cls.total] += 1;
+      if (allowEdit) console.log('[ShiftTable] Render cella — employeeId:', employee.id, '| date:', day.date);
       html += `<td class="shift-cell ${cls.type || 'shift-empty'}" data-shift-uid="${esc(employee.id)}" data-shift-date="${day.date}" ${allowEdit ? '' : 'data-readonly="true"'}>${esc(shiftText)}</td>`;
     });
     html += '</tr>';
@@ -2364,6 +2365,17 @@ function renderShiftTable(tableId, allowEdit) {
   });
   html += '</tr>';
   table.innerHTML = html;
+  if (allowEdit) {
+    table.querySelectorAll('td.shift-cell').forEach(cell => {
+      cell.addEventListener('click', e => {
+        e.stopPropagation();
+        const uid = cell.getAttribute('data-shift-uid') || '';
+        const date = cell.getAttribute('data-shift-date') || '';
+        console.log('[ShiftTable] Click cella — employeeId:', uid, '| date:', date);
+        openShiftEditor(uid, date);
+      });
+    });
+  }
 }
 
 function renderShifts() {
@@ -2691,9 +2703,12 @@ function init() {
   };
   $('shiftsTable').onclick = e => {
     if (!canManageShifts()) return;
-    const cell = e.target.closest('.shift-cell');
+    const cell = e.target.closest('td.shift-cell');
     if (!cell) return;
-    openShiftEditor(cell.getAttribute('data-shift-uid') || '', cell.getAttribute('data-shift-date') || '');
+    const uid = cell.getAttribute('data-shift-uid') || '';
+    const date = cell.getAttribute('data-shift-date') || '';
+    console.log('[ShiftsTable] Click delegato — employeeId:', uid, '| date:', date);
+    openShiftEditor(uid, date);
   };
   $('employeeList').onclick = e => {
     const btn = e.target.closest('button[data-employee-action]');
