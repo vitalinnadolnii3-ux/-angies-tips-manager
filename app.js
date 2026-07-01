@@ -19,7 +19,7 @@ const auth = getAuth(fbApp);
 const functions = getFunctions(fbApp);
 const rtdb = getDatabase(fbApp);
 
-const NAMES = ["Diego","Sunkar","Silvano","Giuseppe","Vitalin","Davide","Zara","Lisa","Anna","Niko","Raffa","Alex","Mariia Sevastianova"];
+const NAMES = ['Vitalin', 'Alex', 'Diego', 'Silvano', 'Giuseppe', 'Davide', 'Anna', 'Sunkar', 'Lisa', 'Zara', 'Extra'];
 let state = { employees: NAMES, kitchenPercent: 20, history: [] };
 let unsub = null;
 let currentUser = '';
@@ -112,7 +112,7 @@ const isResponsible = () => ['responsible', 'responsabile'].includes(currentUser
 const isWaiter = () => currentUserRole.toLowerCase() === 'waiter';
 const canViewGlobalTipsData = () => isAdmin() || isManager() || isResponsible();
 const canManageShifts = () => isAdmin() || isManager() || isResponsible();
-const canManageAttendance = () => isAdmin() || isManager();
+const canManageAttendance = () => isAdmin() || isManager() || isResponsible();
 const canViewAllAttendance = () => canManageAttendance();
 const canManageUsers = () => isAdmin();
 const canViewAllData = () => isAdmin() || isManager();
@@ -760,22 +760,26 @@ function classifyShift(shift) {
 }
 
 function getShiftEmployees() {
-  const presetEmployees = getPresetWeekEmployees();
-  if (presetEmployees.length) return presetEmployees;
-  if (Array.isArray(employeesData) && employeesData.length > 0) {
-    return employeesData
-      .filter(emp => emp.enabled !== false)
-      .map(emp => ({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id }))
-      .sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
-  }
-  const map = new Map();
-  shiftsData.forEach(shift => {
-    if (!shift?.uid) return;
-    const label = normalizeName(shift.employeeName) || normalizeName(shift.uid);
-    map.set(shift.uid, { id: shift.uid, name: label || shift.uid });
+  // Use SHIFT_PRESET_EMPLOYEE_ORDER as the canonical base employee list for all sections
+  const canonicalEmployees = SHIFT_PRESET_EMPLOYEE_ORDER.map(name => {
+    const matchingEmployee = employeesData.find(emp =>
+      emp.enabled !== false &&
+      normalizeName(emp.name).toLowerCase() === name.toLowerCase()
+    );
+    return { id: matchingEmployee?.id || name, name };
   });
-  const employees = [...map.values()].sort((a, b) => a.name.localeCompare(b.name, 'it', { sensitivity: 'base' }));
-  if (employees.length) return employees;
+  // Add any Firestore employees not already in the canonical list
+  if (Array.isArray(employeesData) && employeesData.length > 0) {
+    const presetNameSet = new Set(SHIFT_PRESET_EMPLOYEE_ORDER.map(n => n.toLowerCase()));
+    employeesData
+      .filter(emp => emp.enabled !== false && !presetNameSet.has(normalizeName(emp.name).toLowerCase()))
+      .sort((a, b) => normalizeName(a.name || '').localeCompare(normalizeName(b.name || ''), 'it', { sensitivity: 'base' }))
+      .forEach(emp => {
+        canonicalEmployees.push({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id });
+      });
+  }
+  if (canonicalEmployees.length) return canonicalEmployees;
+  // Fallback to current user if nothing else available
   return currentUserUid ? [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUser }] : [];
 }
 
@@ -794,10 +798,15 @@ function sortUsersList(list = []) {
 }
 
 function syncStateEmployeesFromEmployeesData() {
-  const activeEmps = employeesData.filter(emp => emp.enabled !== false && emp.active !== false);
-  if (activeEmps.length > 0) {
-    state.employees = activeEmps.map(emp => normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id);
-  }
+  // Always use SHIFT_PRESET_EMPLOYEE_ORDER as the canonical base for the unified employee list
+  const presetNames = SHIFT_PRESET_EMPLOYEE_ORDER.slice();
+  const presetNameSet = new Set(presetNames.map(n => n.toLowerCase()));
+  // Append any extra active Firestore employees not already in the preset list
+  const extraNames = employeesData
+    .filter(emp => emp.enabled !== false && emp.active !== false && !presetNameSet.has(normalizeName(emp.name).toLowerCase()))
+    .map(emp => normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id)
+    .filter(Boolean);
+  state.employees = [...presetNames, ...extraNames];
 }
 
 function setEmployeesCache(list = []) {
@@ -1245,12 +1254,32 @@ function renderEmployeesTable() {
     return;
   }
   let html = '<tr><th>Nome</th><th>Email</th><th>Telefono</th><th>Posizione</th><th>Ruolo App</th><th>Stato</th><th>Azioni</th></tr>';
-  if (!employeesData.length) {
+
+  // Build combined list: Firestore employees + preset employees not yet registered
+  const firestoreNameSet = new Set(employeesData.map(emp => normalizeName(emp.name).toLowerCase()));
+  const presetOnlyEmployees = SHIFT_PRESET_EMPLOYEE_ORDER
+    .filter(name => !firestoreNameSet.has(name.toLowerCase()))
+    .map(name => ({ _isPreset: true, name }));
+  const allEmployees = [...employeesData, ...presetOnlyEmployees];
+
+  if (!allEmployees.length) {
     html += '<tr><td colspan="7">Nessun dipendente registrato.</td></tr>';
     table.innerHTML = html;
     return;
   }
-  employeesData.forEach(emp => {
+  allEmployees.forEach(emp => {
+    if (emp._isPreset) {
+      html += `<tr>
+        <td>${esc(emp.name)}</td>
+        <td>-</td>
+        <td>-</td>
+        <td>-</td>
+        <td>-</td>
+        <td><span class="status-badge status-disabled">Non registrato</span></td>
+        <td class="table-actions"><em>Crea account per gestire</em></td>
+      </tr>`;
+      return;
+    }
     const active = emp.active !== false && emp.enabled !== false;
     const statusClass = active ? 'status-enabled' : 'status-disabled';
     const statusText = active ? 'Attivo' : 'Disattivato';
@@ -3007,15 +3036,15 @@ function render() {
 // RENDER HOURS TABLE
 function hours() {
   const canEdit = canViewGlobalTipsData();
-  // Build a map for O(n) employee lookup by normalized name
-  const empNameMap = new Map(
-    employeesData.map(e => [normalizeName(e.name).toLowerCase(), e])
+  // Build canonical employee map for ID lookup (matches attendance storage keys)
+  const canonicalEmpMap = new Map(
+    getShiftEmployees().map(e => [e.name.toLowerCase(), e.id])
   );
   let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
   
   state.employees.forEach((n, i) => {
-    const emp = empNameMap.get(n.toLowerCase());
-    const empId = esc(emp?.id || '');
+    // Use canonical ID (Firestore UID if available, otherwise employee name) to match attendance keys
+    const empId = esc(canonicalEmpMap.get(n.toLowerCase()) || n);
     html += `<tr data-emp-id="${empId}"><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"${canEdit ? '' : ' readonly'}></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
   $('hours').innerHTML = html;
