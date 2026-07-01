@@ -2092,7 +2092,7 @@ function attendanceV2Path(weekStart, date = '', uid = '') {
 }
 
 function resetAttendanceLocalEntries() {
-  resetAttendanceLocalEntries();
+  attendanceWeekEntries = {};
   state.attendance = {};
 }
 
