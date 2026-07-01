@@ -2575,7 +2575,7 @@ function init() {
   $('resetLinkCopyBtn').onclick = async () => {
     const anchor = $('resetLinkAnchor');
     const link = anchor?.href;
-    if (!link || link === '#' || link === window.location.href) return;
+    if (!link || !/^https?:\/\//.test(link)) return;
     try {
       await navigator.clipboard.writeText(link);
       setStatus('resetLinkStatus', 'Link copiato negli appunti!', 'info');
