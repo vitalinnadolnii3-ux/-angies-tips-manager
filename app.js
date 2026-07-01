@@ -1398,12 +1398,25 @@ async function createEmployee() {
     clearEmployeeForm();
     renderEmployeesTable();
     renderUsersTable();
+    let activationLink = null;
     try {
-      await sendPasswordResetEmail(auth, data.normalizedEmail);
-      notify(`Dipendente creato. Email di attivazione/reset inviata a ${data.normalizedEmail}.`, 'info');
-    } catch (resetErr) {
-      console.warn('Dipendente creato ma invio email reset non riuscito:', resetErr);
-      notify(`Dipendente creato, ma non è stato possibile inviare l'email di reset a ${data.normalizedEmail}.`, 'error');
+      const linkResult = await callEmployeeAdminFunction('generatePasswordResetLink', { email: data.normalizedEmail });
+      activationLink = linkResult?.data?.link;
+    } catch (linkErr) {
+      console.warn('[Creazione dipendente] generatePasswordResetLink non disponibile, uso email standard:', linkErr?.message || linkErr);
+    }
+
+    if (activationLink) {
+      showResetLinkModal(activationLink, data.normalizedName || data.normalizedEmail);
+      notify(`Dipendente creato. Condividi il link di attivazione con ${data.normalizedEmail}.`, 'info');
+    } else {
+      try {
+        await sendPasswordResetEmail(auth, data.normalizedEmail);
+        notify(`Dipendente creato. Email di attivazione/reset inviata a ${data.normalizedEmail}.`, 'info');
+      } catch (resetErr) {
+        console.warn('Dipendente creato ma invio email reset non riuscito:', resetErr);
+        notify(`Dipendente creato, ma non è stato possibile inviare l'email di reset a ${data.normalizedEmail}.`, 'error');
+      }
     }
   } catch (e) {
     console.error('Errore salvataggio profilo dipendente:', e);
