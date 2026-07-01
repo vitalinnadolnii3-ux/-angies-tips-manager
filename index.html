@@ -236,27 +236,29 @@
         <h2>Entrata e uscita</h2>
         <div id="attendanceStatus" class="status-message hidden" role="status" aria-live="polite"></div>
         <div class="actions shift-week-nav">
-          <button id="attendancePrevDayBtn" class="clear">Giorno precedente</button>
-          <button id="attendanceTodayBtn">Oggi</button>
-          <button id="attendanceNextDayBtn" class="clear">Giorno successivo</button>
+          <button id="attendancePrevWeekBtn" class="clear">Settimana precedente</button>
+          <button id="attendanceCurrentWeekBtn">Settimana corrente</button>
+          <button id="attendanceNextWeekBtn" class="clear">Settimana successiva</button>
         </div>
-        <div class="panel grid">
-          <label>Data<input id="attendanceDate" type="date"></label>
-          <div class="attendance-week-info">
-            <span>Settimana di riferimento</span>
-            <strong id="attendanceWeekLabel">-</strong>
+        <div class="panel table-scroll">
+          <table id="attendanceTable" class="shift-table attendance-sheet-table" aria-label="Registro settimanale entrata e uscita"></table>
+        </div>
+        <div id="attendanceEditor" class="panel hidden">
+          <h3>Modifica entrata/uscita</h3>
+          <div id="attendanceEditorContext" class="shift-editor-context hidden"></div>
+          <div class="panel grid">
+            <label id="attEntry1Wrap">Entrata 1 (X)<input id="attEntry1" type="time"></label>
+            <label id="attExit1Wrap">Uscita 1 (Y)<input id="attExit1" type="time"></label>
+            <label id="attEntry2Wrap">Entrata 2 (X2)<input id="attEntry2" type="time"></label>
+            <label id="attExit2Wrap">Uscita 2 (Y2)<input id="attExit2" type="time"></label>
+            <label>Note<input id="attNotes" type="text" placeholder="Note opzionali"></label>
+            <label class="shift-rest-label"><input id="attRestDay" type="checkbox"> Giorno di riposo (R)</label>
           </div>
-        </div>
-        <div class="panel table-scroll">
-          <h3>Storico giornaliero</h3>
-          <table id="attendanceTable" class="attendance-table" aria-label="Registro giornaliero entrata e uscita"></table>
-        </div>
-        <div id="attendanceActions" class="actions">
-          <button id="attendanceSaveBtn">Salva entrata e uscita</button>
-        </div>
-        <div class="panel table-scroll">
-          <h3>Storico settimanale</h3>
-          <table id="attendanceWeeklyTable" class="attendance-summary-table" aria-label="Riepilogo settimanale entrata e uscita"></table>
+          <div class="actions">
+            <button id="attSaveEntryBtn">Salva</button>
+            <button id="attDeleteEntryBtn" class="danger hidden">Elimina</button>
+            <button id="attCancelEntryBtn" class="clear">Annulla</button>
+          </div>
         </div>
       </section>
 

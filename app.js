@@ -2,7 +2,7 @@ import { initializeApp, deleteApp } from "https://www.gstatic.com/firebasejs/10.
 import { getFirestore, initializeFirestore, persistentLocalCache, persistentSingleTabManager, doc, getDoc, setDoc, deleteDoc, collection, getDocs, addDoc, query, where, orderBy, onSnapshot, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 import { signInWithEmailAndPassword, createUserWithEmailAndPassword, sendPasswordResetEmail, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
 import { getFunctions, httpsCallable } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-functions.js";
-import { ref as rtdbRef, get as rtdbGet, set as rtdbSet, update as rtdbUpdate, remove as rtdbRemove } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
+import { ref as rtdbRef, get as rtdbGet, set as rtdbSet, update as rtdbUpdate, remove as rtdbRemove, onValue as rtdbOnValue } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-database.js";
 import { firebaseConfig, getAuth, getDatabase } from "./firebase-config.js?v=13";
 
 const fbApp = initializeApp(firebaseConfig);
@@ -35,10 +35,12 @@ let shiftsUnsub = null;
 let weekOffset = 0;
 let editingShiftId = '';
 let todayShiftPopupShown = false;
-let attendanceDate = '';
-let attendanceDayEntries = {};
+let attendanceWeekOffset = 0;
 let attendanceWeekEntries = {};
-let attendanceShiftData = [];
+let contractHoursData = {};
+let editingAttendanceUid = '';
+let editingAttendanceDate = '';
+let attendanceV2Unsub = null;
 const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
 const RESTAURANT_ROLES = ['Direttore', 'Manager', 'Responsabile', 'Cameriere', 'Runner', 'Bartender'];
@@ -95,7 +97,6 @@ let attendanceLoadPromise = null;
 let shiftLoadPromise = null;
 let sessionPrefetchPromise = null;
 let attendanceLoadedWeekStart = '';
-let attendanceWeeklyRenderHandle = 0;
 let chatRenderedMessageIds = new Set();
 
 const $ = id => document.getElementById(id);
@@ -138,14 +139,7 @@ function resetSectionLoadedState() {
   shiftLoadPromise = null;
   sessionPrefetchPromise = null;
   attendanceLoadedWeekStart = '';
-  if (attendanceWeeklyRenderHandle) {
-    if (typeof window.cancelAnimationFrame === 'function') {
-      window.cancelAnimationFrame(attendanceWeeklyRenderHandle);
-    } else {
-      window.clearTimeout(attendanceWeeklyRenderHandle);
-    }
-    attendanceWeeklyRenderHandle = 0;
-  }
+  stopAttendanceV2Listener();
   chatRenderedMessageIds = new Set();
 }
 
@@ -884,19 +878,6 @@ function buildLocalUserRecord(uid, data = {}, previous = {}) {
   };
 }
 
-function scheduleAttendanceWeeklyRender() {
-  if (attendanceWeeklyRenderHandle) return;
-  const renderSummary = () => {
-    attendanceWeeklyRenderHandle = 0;
-    renderAttendanceWeeklyTable();
-  };
-  if (typeof window.requestAnimationFrame === 'function') {
-    attendanceWeeklyRenderHandle = window.requestAnimationFrame(renderSummary);
-    return;
-  }
-  attendanceWeeklyRenderHandle = window.setTimeout(renderSummary, 0);
-}
-
 function prefetchSessionData() {
   if (!currentUserUid) return Promise.resolve();
   if (sessionPrefetchPromise) return sessionPrefetchPromise;
@@ -1083,13 +1064,13 @@ async function logout() {
   weekOffset = 0;
   shiftsData = [];
   usersData = [];
-  attendanceDate = today();
-  attendanceDayEntries = {};
+  attendanceWeekOffset = 0;
   attendanceWeekEntries = {};
-  attendanceShiftData = [];
+  contractHoursData = {};
   $('who').textContent = 'Online';
   stopChatListener();
   stopShiftListeners();
+  stopAttendanceV2Listener();
   resetSectionLoadedState();
   showLogin();
 }
@@ -1219,16 +1200,11 @@ async function ensureUsersLoaded() {
 async function ensureAttendanceLoaded() {
   if (sectionLoaded.attendance) return;
   if (attendanceLoadPromise) return attendanceLoadPromise;
-  attendanceLoadPromise = loadAttendanceData()
-    .then(() => {
-      sectionLoaded.attendance = true;
-    })
-    .catch(e => {
-      console.error('[Attendance] Errore caricamento dati RTDB:', e);
-    })
-    .finally(() => {
-      attendanceLoadPromise = null;
-    });
+  attendanceLoadPromise = Promise.resolve().then(() => {
+    attachAttendanceListeners();
+  }).finally(() => {
+    attendanceLoadPromise = null;
+  });
   return attendanceLoadPromise;
 }
 
@@ -2095,8 +2071,10 @@ function shiftMapByKey() {
   return map;
 }
 
-function attendancePath(dateStr, uid = '') {
-  return uid ? `attendance/${dateStr}/${uid}` : `attendance/${dateStr}`;
+function attendanceV2Path(weekStart, date = '', uid = '') {
+  if (uid) return `attendance/${weekStart}/${date}/${uid}`;
+  if (date) return `attendance/${weekStart}/${date}`;
+  return `attendance/${weekStart}`;
 }
 
 function getAttendanceEmployees() {
@@ -2107,362 +2085,363 @@ function getAttendanceEmployees() {
   return [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUserUid }];
 }
 
-function getAttendanceEntryFor(dateStr, uid) {
-  return attendanceWeekEntries?.[dateStr]?.[uid] || null;
+function getCurrentAttendanceWeekDates() {
+  const base = parseISODate(today());
+  base.setDate(base.getDate() + attendanceWeekOffset * 7);
+  return getWeekDatesForDate(toISODate(base));
 }
 
-function setAttendanceEntryFor(dateStr, uid, entry) {
-  if (!dateStr || !uid) return;
-  if (!attendanceWeekEntries[dateStr] || typeof attendanceWeekEntries[dateStr] !== 'object') {
-    attendanceWeekEntries[dateStr] = {};
+function calcEntryWorkedMinutes(entry) {
+  if (!entry || entry.isRestDay) return 0;
+  let total = 0;
+  const e1 = parseTimeToMinutes(String(entry.entryTime1 || ''));
+  const x1 = parseTimeToMinutes(String(entry.exitTime1 || ''));
+  if (e1 !== null && x1 !== null) {
+    let diff = x1 - e1;
+    if (diff < 0) diff += MINUTES_PER_DAY;
+    total += diff;
   }
-  if (entry) {
-    attendanceWeekEntries[dateStr][uid] = entry;
-  } else {
-    delete attendanceWeekEntries[dateStr][uid];
+  const e2 = parseTimeToMinutes(String(entry.entryTime2 || ''));
+  const x2 = parseTimeToMinutes(String(entry.exitTime2 || ''));
+  if (e2 !== null && x2 !== null) {
+    let diff = x2 - e2;
+    if (diff < 0) diff += MINUTES_PER_DAY;
+    total += diff;
   }
-  attendanceDayEntries = attendanceWeekEntries[attendanceDate] || {};
+  return total;
 }
 
-function getAttendanceShiftFor(uid, dateStr) {
-  return attendanceShiftData.find(shift => shift.uid === uid && shift.date === dateStr) || null;
+function formatAttendanceOrario(entry) {
+  if (!entry) return '';
+  if (entry.isRestDay) return 'R';
+  const e1 = String(entry.entryTime1 || '').trim();
+  const x1 = String(entry.exitTime1 || '').trim();
+  const e2 = String(entry.entryTime2 || '').trim();
+  const x2 = String(entry.exitTime2 || '').trim();
+  if (!e1 && !x1 && !e2 && !x2) return '';
+  const hasSplit = e2 || x2;
+  if (hasSplit) {
+    const lines = [];
+    if (e1) lines.push(`X1 ${e1}`);
+    if (x1) lines.push(`Y1 ${x1}`);
+    if (e2) lines.push(`X2 ${e2}`);
+    if (x2) lines.push(`Y2 ${x2}`);
+    return lines.join('\n');
+  }
+  const lines = [];
+  if (e1) lines.push(`X ${e1}`);
+  if (x1) lines.push(`Y ${x1}`);
+  return lines.join('\n');
 }
 
-function getAttendanceShiftWindow(shift) {
-  if (!shift || shift.isRestDay) {
-    return {
-      shiftText: shift?.isRestDay ? 'Riposo' : 'Nessun turno programmato',
-      startMinutes: null,
-      endMinutes: null
-    };
+function stopAttendanceV2Listener() {
+  if (attendanceV2Unsub) {
+    attendanceV2Unsub();
+    attendanceV2Unsub = null;
   }
-  const shiftText = getShiftDisplayText(shift) || 'Turno programmato';
-  const { startToken, endToken } = extractStartEndFromText(shiftText);
-  const startMinutes = parseTimeToMinutes(shift.startTime || startToken);
-  let endMinutes = parseTimeToMinutes(shift.endTime || endToken);
-  if (startMinutes !== null && endMinutes !== null && endMinutes < startMinutes) endMinutes += MINUTES_PER_DAY;
-  return { shiftText, startMinutes, endMinutes };
+  sectionLoaded.attendance = false;
 }
 
-function getAttendanceComparison(uid, dateStr, entryTime, exitTime) {
-  const shift = getAttendanceShiftFor(uid, dateStr);
-  if (!shift) {
-    return {
-      scheduledText: 'Nessun turno programmato',
-      text: 'Nessun turno programmato',
-      status: 'neutral',
-      delayMinutes: 0,
-      earlyLeaveMinutes: 0
-    };
-  }
-  if (shift.isRestDay) {
-    return {
-      scheduledText: 'Riposo',
-      text: 'Riposo programmato',
-      status: 'neutral',
-      delayMinutes: 0,
-      earlyLeaveMinutes: 0
-    };
-  }
-  const schedule = getAttendanceShiftWindow(shift);
-  const entryMinutes = parseTimeToMinutes(entryTime);
-  const exitMinutesRaw = parseTimeToMinutes(exitTime);
-  let delayMinutes = 0;
-  let earlyLeaveMinutes = 0;
-  const notes = [];
-  if (entryMinutes !== null && schedule.startMinutes !== null && entryMinutes > schedule.startMinutes) {
-    delayMinutes = entryMinutes - schedule.startMinutes;
-    notes.push(`Ritardo ${formatMinutesShort(delayMinutes)}`);
-  }
-  if (exitMinutesRaw !== null && schedule.endMinutes !== null) {
-    let exitMinutes = exitMinutesRaw;
-    if (schedule.endMinutes >= MINUTES_PER_DAY && schedule.startMinutes !== null && exitMinutes < schedule.startMinutes) {
-      exitMinutes += MINUTES_PER_DAY;
-    }
-    if (exitMinutes < schedule.endMinutes) {
-      earlyLeaveMinutes = schedule.endMinutes - exitMinutes;
-      notes.push(`Uscita anticipata ${formatMinutesShort(earlyLeaveMinutes)}`);
-    }
-  }
-  if (!notes.length) {
-    const hasActualData = entryMinutes !== null || exitMinutesRaw !== null;
-    return {
-      scheduledText: schedule.shiftText,
-      text: hasActualData ? 'In linea con il turno' : 'Nessun dato inserito',
-      status: hasActualData ? 'ok' : 'neutral',
-      delayMinutes,
-      earlyLeaveMinutes
-    };
-  }
-  return {
-    scheduledText: schedule.shiftText,
-    text: notes.join(' • '),
-    status: 'alert',
-    delayMinutes,
-    earlyLeaveMinutes
-  };
+function syncAttendanceRestDayState() {
+  const isRest = $('attRestDay') ? $('attRestDay').checked : false;
+  const hide = isRest;
+  if ($('attEntry1Wrap')) $('attEntry1Wrap').classList.toggle('hidden', hide);
+  if ($('attExit1Wrap')) $('attExit1Wrap').classList.toggle('hidden', hide);
+  if ($('attEntry2Wrap')) $('attEntry2Wrap').classList.toggle('hidden', hide);
+  if ($('attExit2Wrap')) $('attExit2Wrap').classList.toggle('hidden', hide);
 }
 
-function setAttendanceDateValue(dateStr) {
-  attendanceDate = dateStr || today();
-  if ($('attendanceDate')) $('attendanceDate').value = attendanceDate;
-  const weekDates = getWeekDatesForDate(attendanceDate);
-  if ($('attendanceWeekLabel')) $('attendanceWeekLabel').textContent = `${fmt(weekDates[0].date)} - ${fmt(weekDates[6].date)}`;
-  if ($('attendanceActions')) $('attendanceActions').classList.toggle('hidden', !currentUserUid);
-}
-
-function isAttendanceEntryEmpty(values) {
-  const entryTime = String(values?.entryTime || '').trim();
-  const exitTime = String(values?.exitTime || '').trim();
-  const pauseMinutes = normalizePauseMinutes(values?.pauseMinutes);
-  const notes = String(values?.notes || '').trim();
-  return !entryTime && !exitTime && pauseMinutes === 0 && !notes;
-}
-
-function readAttendanceRowValues(row) {
-  if (!row) return { entryTime: '', exitTime: '', pauseMinutes: 0, notes: '' };
-  return {
-    entryTime: row.querySelector('[data-att-field="entryTime"]')?.value || '',
-    exitTime: row.querySelector('[data-att-field="exitTime"]')?.value || '',
-    pauseMinutes: row.querySelector('[data-att-field="pauseMinutes"]')?.value || 0,
-    notes: row.querySelector('[data-att-field="notes"]')?.value || ''
-  };
-}
-
-function updateAttendanceRow(row) {
-  if (!row) return;
-  const uid = row.getAttribute('data-attendance-uid') || '';
-  const values = readAttendanceRowValues(row);
-  const pauseMinutes = normalizePauseMinutes(values.pauseMinutes);
-  const workedMinutes = calculateWorkedMinutes(values.entryTime, values.exitTime, pauseMinutes);
-  const comparison = getAttendanceComparison(uid, attendanceDate, values.entryTime, values.exitTime);
-  const employee = getAttendanceEmployees().find(item => item.id === uid);
-  if (isAttendanceEntryEmpty({ ...values, pauseMinutes })) {
-    setAttendanceEntryFor(attendanceDate, uid, null);
-  } else {
-    setAttendanceEntryFor(attendanceDate, uid, {
-      ...(getAttendanceEntryFor(attendanceDate, uid) || {}),
-      uid,
-      employeeName: employee?.name || '',
-      date: attendanceDate,
-      entryTime: String(values.entryTime || '').trim(),
-      exitTime: String(values.exitTime || '').trim(),
-      pauseMinutes,
-      notes: String(values.notes || '').trim(),
-      workedMinutes,
-      scheduledShiftText: comparison.scheduledText,
-      delayMinutes: comparison.delayMinutes,
-      earlyLeaveMinutes: comparison.earlyLeaveMinutes
-    });
+function openAttendanceEditor(uid, date) {
+  if (!canManageAttendance()) return;
+  const weekDates = getCurrentAttendanceWeekDates();
+  const entry = (attendanceWeekEntries?.[date] || {})[uid] || null;
+  editingAttendanceUid = uid;
+  editingAttendanceDate = date;
+  if ($('attEntry1')) $('attEntry1').value = entry?.entryTime1 || '';
+  if ($('attExit1')) $('attExit1').value = entry?.exitTime1 || '';
+  if ($('attEntry2')) $('attEntry2').value = entry?.entryTime2 || '';
+  if ($('attExit2')) $('attExit2').value = entry?.exitTime2 || '';
+  if ($('attNotes')) $('attNotes').value = entry?.notes || '';
+  if ($('attRestDay')) $('attRestDay').checked = Boolean(entry?.isRestDay);
+  syncAttendanceRestDayState();
+  const hasEntry = Boolean(entry && (entry.entryTime1 || entry.exitTime1 || entry.isRestDay));
+  if ($('attDeleteEntryBtn')) $('attDeleteEntryBtn').classList.toggle('hidden', !hasEntry);
+  const ctx = $('attendanceEditorContext');
+  if (ctx) {
+    const emp = getAttendanceEmployees().find(e => e.id === uid);
+    const dayInfo = weekDates.find(d => d.date === date);
+    const empName = emp?.name || uid;
+    const dayLabel = dayInfo ? `${dayInfo.dayName} ${dayInfo.shortDate}` : fmt(date);
+    ctx.textContent = `📅 ${dayLabel} — ${empName}`;
+    ctx.classList.remove('hidden');
   }
-  const workedCell = row.querySelector('.attendance-worked-cell');
-  const scheduledCell = row.querySelector('.attendance-scheduled-cell');
-  const comparisonCell = row.querySelector('.attendance-comparison-cell');
-  if (workedCell) workedCell.textContent = formatWorkedHours(workedMinutes);
-  if (scheduledCell) scheduledCell.textContent = comparison.scheduledText;
-  if (comparisonCell) {
-    comparisonCell.textContent = comparison.text;
-    comparisonCell.classList.toggle('attendance-comparison-alert', comparison.status === 'alert');
+  if ($('attendanceEditor')) {
+    $('attendanceEditor').classList.remove('hidden');
+    $('attendanceEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
-  row.classList.toggle('attendance-row-alert', comparison.status === 'alert');
+}
+
+function closeAttendanceEditor() {
+  editingAttendanceUid = '';
+  editingAttendanceDate = '';
+  if ($('attEntry1')) $('attEntry1').value = '';
+  if ($('attExit1')) $('attExit1').value = '';
+  if ($('attEntry2')) $('attEntry2').value = '';
+  if ($('attExit2')) $('attExit2').value = '';
+  if ($('attNotes')) $('attNotes').value = '';
+  if ($('attRestDay')) $('attRestDay').checked = false;
+  syncAttendanceRestDayState();
+  if ($('attDeleteEntryBtn')) $('attDeleteEntryBtn').classList.add('hidden');
+  const ctx = $('attendanceEditorContext');
+  if (ctx) { ctx.textContent = ''; ctx.classList.add('hidden'); }
+  if ($('attendanceEditor')) $('attendanceEditor').classList.add('hidden');
 }
 
 function renderAttendanceTable() {
   const table = $('attendanceTable');
   if (!table) return;
   const employees = getAttendanceEmployees();
+  const weekDates = getCurrentAttendanceWeekDates();
   const canEdit = canManageAttendance();
-  let html = '<tr><th scope="col">Dipendente</th><th scope="col">Turno programmato</th><th scope="col">Entrata</th><th scope="col">Uscita</th><th scope="col">Pausa (min)</th><th scope="col">Note</th><th scope="col">Ore reali</th><th scope="col">Confronto</th></tr>';
-  if (!employees.length) {
-    table.innerHTML = `${html}<tr><td colspan="8">Nessun dipendente disponibile.</td></tr>`;
-    return;
-  }
-  employees.forEach(employee => {
-    const entry = getAttendanceEntryFor(attendanceDate, employee.id) || {};
-    const entryTime = String(entry.entryTime || '').trim();
-    const exitTime = String(entry.exitTime || '').trim();
-    const pauseMinutes = entry.pauseMinutes ?? '';
-    const notes = String(entry.notes || '').trim();
-    const workedMinutes = calculateWorkedMinutes(entryTime, exitTime, pauseMinutes);
-    const comparison = getAttendanceComparison(employee.id, attendanceDate, entryTime, exitTime);
-    const rowClass = comparison.status === 'alert' ? 'attendance-row attendance-row-alert' : 'attendance-row';
-    // Employees can edit their own row; admin/manager can edit all rows
-    const canEditRow = canEdit || employee.id === currentUserUid;
-    html += `<tr class="${rowClass}" data-attendance-uid="${esc(employee.id)}">
-      <td class="attendance-employee-cell">${esc(employee.name)}</td>
-      <td class="attendance-scheduled-cell">${esc(comparison.scheduledText)}</td>
-      <td>${canEditRow ? `<input data-att-field="entryTime" type="time" value="${esc(entryTime)}">` : esc(entryTime || '-')}</td>
-      <td>${canEditRow ? `<input data-att-field="exitTime" type="time" value="${esc(exitTime)}">` : esc(exitTime || '-')}</td>
-      <td>${canEdit ? `<input data-att-field="pauseMinutes" type="number" min="0" step="1" value="${esc(pauseMinutes)}">` : esc(pauseMinutes === '' ? '-' : pauseMinutes)}</td>
-      <td>${canEdit ? `<input data-att-field="notes" type="text" value="${esc(notes)}" placeholder="Note">` : esc(notes || '-')}</td>
-      <td class="attendance-worked-cell">${esc(formatWorkedHours(workedMinutes))}</td>
-      <td class="attendance-comparison-cell${comparison.status === 'alert' ? ' attendance-comparison-alert' : ''}">${esc(comparison.text)}</td>
-    </tr>`;
+  // Build two-row header
+  let html = '<thead>';
+  html += '<tr>';
+  html += '<th class="shift-employee-header att-name-header" rowspan="2">Dipendente</th>';
+  html += '<th class="att-contract-header" rowspan="2">Ore<br>contratt.</th>';
+  weekDates.forEach(day => {
+    html += `<th colspan="2" class="att-day-header">${esc(day.dayName)}<span class="shift-date">${esc(day.shortDate)}</span></th>`;
   });
-  table.innerHTML = html;
-}
-
-function renderAttendanceWeeklyTable() {
-  const table = $('attendanceWeeklyTable');
-  if (!table) return;
-  const employees = getAttendanceEmployees();
-  const weekDates = getWeekDatesForDate(attendanceDate || today());
-  let html = '<tr><th scope="col">Dipendente</th><th scope="col">Giorni registrati</th><th scope="col">Ore totali</th><th scope="col">Ritardi</th><th scope="col">Uscite anticipate</th></tr>';
+  html += '<th class="att-total-header" rowspan="2">Ore<br>fatte</th>';
+  html += '<th class="att-diff-header" rowspan="2">Diff.<br>ore</th>';
+  html += '</tr>';
+  html += '<tr>';
+  weekDates.forEach(() => {
+    html += '<th class="att-subheader">Orario</th><th class="att-subheader att-ore-header">#Ore</th>';
+  });
+  html += '</tr>';
+  html += '</thead>';
+  // Body
+  html += '<tbody>';
   if (!employees.length) {
-    table.innerHTML = `${html}<tr><td colspan="5">Nessun dipendente disponibile.</td></tr>`;
+    html += `<tr><td colspan="${4 + weekDates.length * 2}">Nessun dipendente disponibile.</td></tr>`;
+    html += '</tbody>';
+    table.innerHTML = html;
     return;
   }
   employees.forEach(employee => {
-    let recordedDays = 0;
+    const contractHours = Number(contractHoursData?.[employee.id] || 0);
     let totalWorkedMinutes = 0;
-    let delayCount = 0;
-    let delayMinutes = 0;
-    let earlyCount = 0;
-    let earlyMinutes = 0;
+    html += `<tr data-att-row-uid="${esc(employee.id)}">`;
+    html += `<td class="shift-employee-cell">${esc(employee.name)}</td>`;
+    if (canEdit) {
+      html += `<td class="att-contract-cell"><input class="att-contract-input" type="number" min="0" max="168" step="0.5" value="${contractHours || ''}" placeholder="0" data-att-contract-uid="${esc(employee.id)}"></td>`;
+    } else {
+      html += `<td class="att-contract-cell">${contractHours || '-'}</td>`;
+    }
     weekDates.forEach(day => {
-      const entry = getAttendanceEntryFor(day.date, employee.id);
-      if (!entry || isAttendanceEntryEmpty(entry)) return;
-      recordedDays += 1;
-      const workedMinutes = calculateWorkedMinutes(entry.entryTime, entry.exitTime, entry.pauseMinutes);
-      if (workedMinutes !== null) totalWorkedMinutes += workedMinutes;
-      const comparison = getAttendanceComparison(employee.id, day.date, entry.entryTime, entry.exitTime);
-      if (comparison.delayMinutes > 0) {
-        delayCount += 1;
-        delayMinutes += comparison.delayMinutes;
+      const entry = (attendanceWeekEntries?.[day.date] || {})[employee.id] || null;
+      const orarioText = formatAttendanceOrario(entry);
+      const workedMinutes = calcEntryWorkedMinutes(entry);
+      totalWorkedMinutes += workedMinutes;
+      const orarioHtml = orarioText ? esc(orarioText).replace(/\n/g, '<br>') : '';
+      const isRest = entry?.isRestDay;
+      const hasTimes = orarioText && !isRest;
+      const cellClass = isRest ? 'att-orario-cell att-rest-cell' : (hasTimes ? 'att-orario-cell att-filled-cell' : 'att-orario-cell att-empty-cell');
+      if (canEdit) {
+        html += `<td class="${cellClass} att-orario-clickable" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}">${orarioHtml}</td>`;
+      } else {
+        html += `<td class="${cellClass}">${orarioHtml}</td>`;
       }
-      if (comparison.earlyLeaveMinutes > 0) {
-        earlyCount += 1;
-        earlyMinutes += comparison.earlyLeaveMinutes;
+      let oreDisplay;
+      if (isRest) {
+        oreDisplay = 'R';
+      } else if (workedMinutes > 0) {
+        oreDisplay = esc(formatWorkedHours(workedMinutes));
+      } else {
+        oreDisplay = '-';
       }
+      html += `<td class="att-ore-cell">${oreDisplay}</td>`;
     });
-    html += `<tr>
-      <td class="attendance-employee-cell">${esc(employee.name)}</td>
-      <td>${recordedDays}</td>
-      <td>${esc(formatWorkedHours(totalWorkedMinutes))}</td>
-      <td>${delayCount ? `${delayCount} (${esc(formatMinutesShort(delayMinutes))})` : '-'}</td>
-      <td>${earlyCount ? `${earlyCount} (${esc(formatMinutesShort(earlyMinutes))})` : '-'}</td>
-    </tr>`;
+    const oreFatteDisplay = totalWorkedMinutes > 0 ? esc(formatWorkedHours(totalWorkedMinutes)) : '-';
+    const totalHoursNum = totalWorkedMinutes / 60;
+    const diffHours = contractHours > 0 ? totalHoursNum - contractHours : null;
+    const diffDisplay = diffHours !== null ? `${diffHours >= 0 ? '+' : ''}${num(diffHours)} h` : '-';
+    const diffClass = diffHours === null ? '' : (diffHours > 0 ? 'att-diff-positive' : diffHours < 0 ? 'att-diff-negative' : 'att-diff-zero');
+    html += `<td class="att-total-cell">${oreFatteDisplay}</td>`;
+    html += `<td class="att-diff-cell ${diffClass}">${diffDisplay}</td>`;
+    html += '</tr>';
   });
+  html += '</tbody>';
   table.innerHTML = html;
+  // Attach event handlers
+  if (canEdit) {
+    table.querySelectorAll('.att-contract-input').forEach(input => {
+      input.addEventListener('blur', () => {
+        const uid = input.getAttribute('data-att-contract-uid');
+        if (!uid) return;
+        void saveContractHours(uid, input.value);
+      });
+    });
+    table.querySelectorAll('.att-orario-clickable').forEach(cell => {
+      cell.addEventListener('click', () => {
+        const uid = cell.getAttribute('data-att-uid');
+        const date = cell.getAttribute('data-att-date');
+        if (uid && date) openAttendanceEditor(uid, date);
+      });
+    });
+  }
 }
 
 function renderAttendance() {
-  setAttendanceDateValue(attendanceDate || today());
   renderAttendanceTable();
-  renderAttendanceWeeklyTable();
 }
 
-async function loadAttendanceData(forceRefresh = false) {
+function attachAttendanceListeners() {
+  stopAttendanceV2Listener();
   if (!currentUserUid) {
-    attendanceDayEntries = {};
     attendanceWeekEntries = {};
-    attendanceShiftData = [];
-    attendanceLoadedWeekStart = '';
+    contractHoursData = {};
     setAttendanceStatus('');
     renderAttendance();
     return;
   }
-  const selectedDate = attendanceDate || today();
-  setAttendanceDateValue(selectedDate);
-  setAttendanceStatus('Caricamento entrate e uscite...', 'info');
-  const weekDates = getWeekDatesForDate(selectedDate);
+  const weekDates = getCurrentAttendanceWeekDates();
   const weekStart = weekDates[0].date;
-  if (!forceRefresh && attendanceLoadedWeekStart === weekStart && Object.keys(attendanceWeekEntries).length) {
-    attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
-    setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
-    renderAttendance();
-    return;
-  }
-  try {
-    const attendanceReads = weekDates.map(day => {
-      const path = canViewAllAttendance() ? attendancePath(day.date) : attendancePath(day.date, currentUserUid);
-      return rtdbGet(rtdbRef(rtdb, path)).then(snapshot => ({ date: day.date, value: snapshot.val() }));
-    });
-    const attendanceValues = await Promise.all(attendanceReads);
-    attendanceWeekEntries = {};
-    attendanceValues.forEach(({ date, value }) => {
-      if (canViewAllAttendance()) {
-        attendanceWeekEntries[date] = value && typeof value === 'object' ? value : {};
-      } else {
-        attendanceWeekEntries[date] = value ? { [currentUserUid]: value } : {};
-      }
-    });
-    attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
-    attendanceShiftData = mergePresetWeekShifts([], weekDates);
-    attendanceLoadedWeekStart = weekStart;
-    setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
-    renderAttendance();
-    // Carica i turni Firestore in background — non blocca il render della pagina
-    const capturedWeekStart = weekStart;
-    const shiftsQuery = query(
-      shiftCollection(),
-      where('date', '>=', weekDates[0].date),
-      where('date', '<=', weekDates[6].date),
-      orderBy('date', 'asc')
-    );
-    getDocs(shiftsQuery)
-      .then(shiftSnapshot => {
-        // Ignora risultati obsoleti se l'utente ha cambiato settimana
-        if (attendanceLoadedWeekStart !== capturedWeekStart) return;
-        const fetchedShifts = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-        attendanceShiftData = mergePresetWeekShifts(fetchedShifts, weekDates);
-        renderAttendance();
-      })
-      .catch(e => {
-        console.warn('[Attendance] Caricamento turni Firestore non riuscito, uso turni preset:', e);
+  attendanceWeekEntries = {};
+  setAttendanceStatus('Caricamento entrate e uscite...', 'info');
+  renderAttendance();
+  // Load contract hours (non-blocking)
+  rtdbGet(rtdbRef(rtdb, 'contractHours')).then(snap => {
+    contractHoursData = snap.exists() ? (snap.val() || {}) : {};
+    renderAttendanceTable();
+  }).catch(e => {
+    console.warn('[Attendance] Ore contrattuali non caricate:', e);
+  });
+  if (canViewAllAttendance()) {
+    const weekRef = rtdbRef(rtdb, `attendance/${weekStart}`);
+    const unsub = rtdbOnValue(weekRef, snap => {
+      const weekData = snap.exists() ? snap.val() : {};
+      attendanceWeekEntries = {};
+      Object.entries(weekData || {}).forEach(([date, dateData]) => {
+        if (dateData && typeof dateData === 'object') {
+          attendanceWeekEntries[date] = dateData;
+        }
       });
-  } catch (e) {
-    console.error('Errore caricamento entrate e uscite:', e);
-    attendanceDayEntries = {};
-    attendanceWeekEntries = {};
-    attendanceShiftData = [];
-    attendanceLoadedWeekStart = '';
-    setAttendanceStatus('Impossibile caricare entrata e uscita.', 'error');
-    renderAttendance();
+      sectionLoaded.attendance = true;
+      attendanceLoadedWeekStart = weekStart;
+      setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
+      renderAttendance();
+    }, err => {
+      console.error('[Attendance] Errore listener RTDB:', err);
+      sectionLoaded.attendance = false;
+      setAttendanceStatus('Impossibile caricare entrata e uscita.', 'error');
+    });
+    attendanceV2Unsub = unsub;
+  } else {
+    // Waiter: load own entries for each day
+    const reads = weekDates.map(day =>
+      rtdbGet(rtdbRef(rtdb, `attendance/${weekStart}/${day.date}/${currentUserUid}`))
+        .then(snap => ({ date: day.date, value: snap.exists() ? snap.val() : null }))
+    );
+    Promise.all(reads).then(results => {
+      attendanceWeekEntries = {};
+      results.forEach(({ date, value }) => {
+        attendanceWeekEntries[date] = value ? { [currentUserUid]: value } : {};
+      });
+      sectionLoaded.attendance = true;
+      attendanceLoadedWeekStart = weekStart;
+      setAttendanceStatus('Visualizzi solo la tua entrata e uscita.', 'info');
+      renderAttendance();
+    }).catch(e => {
+      console.error('[Attendance] Errore caricamento:', e);
+      sectionLoaded.attendance = false;
+      setAttendanceStatus('Impossibile caricare entrata e uscita.', 'error');
+    });
   }
 }
 
-async function saveAttendance() {
+async function loadAttendanceData(forceRefresh = false) {
+  attachAttendanceListeners();
+}
+
+async function saveAttendanceEntry() {
+  if (!canManageAttendance()) { setAttendanceStatus('Accesso consentito solo ad Admin/Manager/Responsabile.', 'error'); return; }
+  const uid = editingAttendanceUid;
+  const date = editingAttendanceDate;
+  if (!uid || !date) { setAttendanceStatus('Nessuna cella selezionata.', 'error'); return; }
   if (!currentUserUid) { setAttendanceStatus('Sessione non valida. Effettua di nuovo il login.', 'error'); return; }
-  if (!attendanceDate) { setAttendanceStatus('Seleziona una data.', 'error'); return; }
-  const rows = [...document.querySelectorAll('#attendanceTable tr[data-attendance-uid]')];
-  if (!rows.length) return;
+  const weekDates = getCurrentAttendanceWeekDates();
+  const weekStart = weekDates[0].date;
+  const isRestDay = $('attRestDay') ? $('attRestDay').checked : false;
+  const entryTime1 = isRestDay ? '' : String($('attEntry1')?.value || '').trim();
+  const exitTime1 = isRestDay ? '' : String($('attExit1')?.value || '').trim();
+  const entryTime2 = isRestDay ? '' : String($('attEntry2')?.value || '').trim();
+  const exitTime2 = isRestDay ? '' : String($('attExit2')?.value || '').trim();
+  const notes = String($('attNotes')?.value || '').trim();
+  const employee = getAttendanceEmployees().find(e => e.id === uid);
+  const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
+  const workedMinutes = calcEntryWorkedMinutes(entryForCalc);
+  const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
+  const payload = {
+    uid,
+    employeeName: employee?.name || '',
+    date,
+    entryTime1,
+    exitTime1,
+    entryTime2,
+    exitTime2,
+    isRestDay,
+    workedHours,
+    notes,
+    updatedAt: new Date().toISOString(),
+    updatedBy: currentUserUid
+  };
   try {
-    await Promise.all(rows.map(async row => {
-      const uid = row.getAttribute('data-attendance-uid') || '';
-      // Non-admin/manager users can only save their own row
-      if (!canManageAttendance() && uid !== currentUserUid) return;
-      const values = readAttendanceRowValues(row);
-      const pauseMinutes = normalizePauseMinutes(values.pauseMinutes);
-      if (isAttendanceEntryEmpty({ ...values, pauseMinutes })) {
-        await rtdbSet(rtdbRef(rtdb, attendancePath(attendanceDate, uid)), null);
-        return;
-      }
-      const workedMinutes = calculateWorkedMinutes(values.entryTime, values.exitTime, pauseMinutes);
-      const comparison = getAttendanceComparison(uid, attendanceDate, values.entryTime, values.exitTime);
-      const employee = getAttendanceEmployees().find(item => item.id === uid);
-      await rtdbSet(rtdbRef(rtdb, attendancePath(attendanceDate, uid)), {
-        uid,
-        employeeName: employee?.name || '',
-        date: attendanceDate,
-        entryTime: String(values.entryTime || '').trim(),
-        exitTime: String(values.exitTime || '').trim(),
-        pauseMinutes,
-        notes: String(values.notes || '').trim(),
-        workedMinutes,
-        scheduledShiftText: comparison.scheduledText,
-        delayMinutes: comparison.delayMinutes,
-        earlyLeaveMinutes: comparison.earlyLeaveMinutes,
-        updatedAt: new Date().toISOString(),
-        updatedBy: currentUserUid || ''
-      });
-    }));
-    void writeLog(`attendance_save:${attendanceDate}`);
-    await loadAttendanceData(true);
-    setAttendanceStatus('Entrate e uscite salvate.', 'info');
+    await rtdbSet(rtdbRef(rtdb, attendanceV2Path(weekStart, date, uid)), payload);
+    // Update local cache immediately for non-realtime path (waiter)
+    if (!attendanceWeekEntries[date]) attendanceWeekEntries[date] = {};
+    attendanceWeekEntries[date][uid] = payload;
+    void writeLog(`attendance_save:${date}:${uid}`);
+    closeAttendanceEditor();
+    setAttendanceStatus('Entrata/uscita salvata.', 'info');
+    if (!canViewAllAttendance()) renderAttendance();
   } catch (e) {
-    console.error('Errore salvataggio entrate e uscite:', e);
-    setAttendanceStatus('Errore salvataggio entrate e uscite: ' + e.message, 'error');
+    console.error('[Attendance] Errore salvataggio:', e);
+    setAttendanceStatus('Errore salvataggio: ' + e.message, 'error');
+  }
+}
+
+async function deleteAttendanceEntry() {
+  if (!canManageAttendance()) return;
+  const uid = editingAttendanceUid;
+  const date = editingAttendanceDate;
+  if (!uid || !date) return;
+  if (!confirm('Eliminare questa entrata/uscita?')) return;
+  const weekDates = getCurrentAttendanceWeekDates();
+  const weekStart = weekDates[0].date;
+  try {
+    await rtdbSet(rtdbRef(rtdb, attendanceV2Path(weekStart, date, uid)), null);
+    if (attendanceWeekEntries[date]) delete attendanceWeekEntries[date][uid];
+    void writeLog(`attendance_delete:${date}:${uid}`);
+    closeAttendanceEditor();
+    setAttendanceStatus('Entrata/uscita eliminata.', 'info');
+    if (!canViewAllAttendance()) renderAttendance();
+  } catch (e) {
+    console.error('[Attendance] Errore eliminazione:', e);
+    setAttendanceStatus('Errore eliminazione: ' + e.message, 'error');
+  }
+}
+
+async function saveContractHours(uid, hours) {
+  if (!canManageAttendance()) return;
+  const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
+  const value = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(hours) || 0));
+  try {
+    await rtdbSet(rtdbRef(rtdb, `contractHours/${uid}`), value);
+    contractHoursData[uid] = value;
+    renderAttendanceTable();
+  } catch (e) {
+    console.warn('[Attendance] Impossibile salvare ore contrattuali:', e);
   }
 }
 
@@ -2774,7 +2753,6 @@ function init() {
   $('date').value = today();
   $('from').value = today().slice(0, 8) + '01';
   $('to').value = today();
-  setAttendanceDateValue(today());
   
   document.querySelectorAll('nav button').forEach(b => {
     b.onclick = () => { void tab(b.dataset.tab, b); };
@@ -2822,36 +2800,25 @@ function init() {
   $('shiftSaveBtn').onclick = saveShift;
   $('shiftDeleteBtn').onclick = deleteShift;
   $('shiftCancelBtn').onclick = clearShiftEditor;
-  $('attendancePrevDayBtn').onclick = () => {
-    const date = parseISODate(attendanceDate || today());
-    date.setDate(date.getDate() - 1);
-    setAttendanceDateValue(toISODate(date));
-    void loadAttendanceData();
+  $('attendancePrevWeekBtn').onclick = () => {
+    attendanceWeekOffset -= 1;
+    closeAttendanceEditor();
+    attachAttendanceListeners();
   };
-  $('attendanceTodayBtn').onclick = () => {
-    setAttendanceDateValue(today());
-    void loadAttendanceData();
+  $('attendanceCurrentWeekBtn').onclick = () => {
+    attendanceWeekOffset = 0;
+    closeAttendanceEditor();
+    attachAttendanceListeners();
   };
-  $('attendanceNextDayBtn').onclick = () => {
-    const date = parseISODate(attendanceDate || today());
-    date.setDate(date.getDate() + 1);
-    setAttendanceDateValue(toISODate(date));
-    void loadAttendanceData();
+  $('attendanceNextWeekBtn').onclick = () => {
+    attendanceWeekOffset += 1;
+    closeAttendanceEditor();
+    attachAttendanceListeners();
   };
-  $('attendanceDate').onchange = () => {
-    setAttendanceDateValue($('attendanceDate').value || today());
-    void loadAttendanceData();
-  };
-  $('attendanceSaveBtn').onclick = saveAttendance;
-  $('attendanceTable').oninput = e => {
-    const row = e.target.closest('tr[data-attendance-uid]');
-    if (!row) return;
-    const rowUid = row.getAttribute('data-attendance-uid');
-    if (!canManageAttendance() && rowUid !== currentUserUid) return;
-    updateAttendanceRow(row);
-    scheduleAttendanceWeeklyRender();
-    setAttendanceStatus('Modifiche non salvate.', 'info');
-  };
+  $('attSaveEntryBtn').onclick = saveAttendanceEntry;
+  $('attDeleteEntryBtn').onclick = deleteAttendanceEntry;
+  $('attCancelEntryBtn').onclick = closeAttendanceEditor;
+  $('attRestDay').onchange = syncAttendanceRestDayState;
   $('shiftsTable').onclick = e => {
     if (!canManageShifts()) return;
     const cell = e.target.closest('td.shift-cell');
@@ -2917,6 +2884,7 @@ async function tab(id, b) {
   }
   if (previousTab === 'chat' && id !== 'chat') stopChatListener();
   if (['turni', 'myShifts'].includes(previousTab) && !['turni', 'myShifts'].includes(id)) stopShiftListeners();
+  if (previousTab === 'attendance' && id !== 'attendance') stopAttendanceV2Listener();
   document.querySelectorAll('.page').forEach(p => {
     p.classList.remove('active');
     p.style.display = 'none';
@@ -3134,10 +3102,23 @@ async function saveDay() {
 async function populateHoursFromAttendance(date) {
   if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
   try {
-    const cachedDayAttendance = attendanceWeekEntries?.[date];
-    const dayAttendance = cachedDayAttendance && typeof cachedDayAttendance === 'object'
-      ? cachedDayAttendance
-      : await rtdbGet(rtdbRef(rtdb, `attendance/${date}`)).then(snap => snap.exists() ? snap.val() : null);
+    // Try cache first (new format)
+    let dayAttendance = null;
+    const cached = attendanceWeekEntries?.[date];
+    if (cached && typeof cached === 'object' && Object.keys(cached).length > 0) {
+      dayAttendance = cached;
+    } else {
+      // Try new RTDB path attendance/{weekStart}/{date}
+      const weekStart = getWeekStartISO(date);
+      const newSnap = await rtdbGet(rtdbRef(rtdb, `attendance/${weekStart}/${date}`));
+      if (newSnap.exists()) {
+        dayAttendance = newSnap.val();
+      } else {
+        // Fallback to old path attendance/{date}
+        const oldSnap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
+        if (oldSnap.exists()) dayAttendance = oldSnap.val();
+      }
+    }
     if (!dayAttendance || typeof dayAttendance !== 'object') return;
     const rows = document.querySelectorAll('#hours tr[data-emp-id]');
     let anyFilled = false;
@@ -3145,12 +3126,20 @@ async function populateHoursFromAttendance(date) {
       const uid = row.getAttribute('data-emp-id');
       if (!uid) return;
       const entry = dayAttendance[uid];
-      if (!entry || entry.workedMinutes == null) return;
+      if (!entry) return;
       const input = row.querySelector('.hour');
       if (!input) return;
-      const workedHours = Math.round((Number(entry.workedMinutes) / 60) * 100) / 100;
-      input.value = workedHours;
-      anyFilled = true;
+      // Support both new format (workedHours) and old format (workedMinutes)
+      let workedHours = 0;
+      if (entry.workedHours != null) {
+        workedHours = Number(entry.workedHours);
+      } else if (entry.workedMinutes != null) {
+        workedHours = Math.round((Number(entry.workedMinutes) / 60) * 100) / 100;
+      }
+      if (workedHours > 0) {
+        input.value = workedHours;
+        anyFilled = true;
+      }
     });
     if (anyFilled) updateHourCalculations();
   } catch (e) {
@@ -3498,12 +3487,12 @@ window.addEventListener('load', async () => {
           currentUserRole = '';
           employeesData = [];
           shiftsData = [];
-          attendanceDate = today();
-          attendanceDayEntries = {};
+          attendanceWeekOffset = 0;
           attendanceWeekEntries = {};
-          attendanceShiftData = [];
+          contractHoursData = {};
           stopShiftListeners();
           stopChatListener();
+          stopAttendanceV2Listener();
           $('who').textContent = 'Online';
           clearEmployeeForm();
           clearShiftEditor();
@@ -3543,13 +3532,13 @@ window.addEventListener('load', async () => {
         weekOffset = 0;
         employeesData = [];
         shiftsData = [];
-        attendanceDate = today();
-        attendanceDayEntries = {};
+        attendanceWeekOffset = 0;
         attendanceWeekEntries = {};
-        attendanceShiftData = [];
+        contractHoursData = {};
         $('who').textContent = 'Online';
         stopChatListener();
         stopShiftListeners();
+        stopAttendanceV2Listener();
         clearEmployeeForm();
         clearShiftEditor();
         syncEmployeeTabVisibility();
