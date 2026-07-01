@@ -2525,8 +2525,8 @@ async function saveAttendanceEntry(options = {}) {
   const employee = getAttendanceEmployees().find(e => e.id === uid);
   const employeeName = employee?.name || '';
   const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
-  const workedMinutes = isRestDay ? 0 : calcEntryWorkedMinutes(entryForCalc);
-  const workedHours = isRestDay ? 0 : Math.round((workedMinutes / 60) * 100) / 100;
+  const workedMinutes = calcEntryWorkedMinutes(entryForCalc); // returns 0 when isRestDay=true
+  const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
   const payload = {
     uid,
     employeeName,
@@ -2551,7 +2551,8 @@ async function saveAttendanceEntry(options = {}) {
   try {
     await rtdbSet(rtdbRef(rtdb, savePath), payload);
     console.log('[Attendance] SAVE Firebase OK per path:', savePath);
-    // Aggiorna subito lo stato locale e ridisegna la tabella (ottimistic update)
+    // Aggiorna subito lo stato locale e ridisegna la tabella (ottimistic update:
+    // mostra i nuovi dati immediatamente senza aspettare il reload asincrono da Firebase)
     if (!attendanceWeekEntries[date]) attendanceWeekEntries[date] = {};
     attendanceWeekEntries[date][uid] = payload;
     renderAttendanceTable();
