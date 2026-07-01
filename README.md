@@ -27,7 +27,7 @@ Per la gestione dipendenti admin dall'app:
 - collezione Firestore: `restaurants/angies/employees/{uid}` con campi `email`, `name`, `role`, `enabled`, `createdAt`, `updatedAt`
 - utenti RTDB: `users/{uid}` con campi `email`, `name`, `role`, `active` usati per RBAC di turni/attendance
 - turni settimanali: `restaurants/angies/shifts/{shiftId}` con campi `uid`, `date`, `shiftText`, `startTime`, `endTime`, `role`, `notes`, `isRestDay`, `createdAt`, `updatedAt`
-- attendance RTDB: `attendance/{date}/{uid}` con campi `entryTime`, `exitTime`, `pauseMinutes`, `workedMinutes`, `scheduledShiftText`, `delayMinutes`, `earlyLeaveMinutes`, `notes`, `updatedAt`, `updatedBy`
+- attendance RTDB: `attendance/{weekStart}/{date}/{uid}` con campi `entryTime1`, `exitTime1`, `entryTime2`, `exitTime2`, `workedHours`, `updatedAt`, `updatedBy` (più eventuali metadati come `uid`, `employeeName`, `isRestDay`, `notes`)
 - opzionale (consigliato) Callable Functions:
   - `createEmployeeAuthUser`
   - `updateEmployeeAuthUser`
