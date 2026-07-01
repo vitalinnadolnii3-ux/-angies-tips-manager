@@ -5,5 +5,8 @@
   "firestore": {
     "rules": "FIRESTORE_RULES.txt",
     "indexes": "firestore.indexes.json"
+  },
+  "functions": {
+    "source": "functions"
   }
 }
