@@ -2382,7 +2382,7 @@ async function persistAttendanceRecord(date, uid, record, { silentSuccess = fals
     return true;
   } catch (e) {
     const message = getFriendlyRtdbMessage(e, `Errore salvataggio entrata/uscita: ${e?.message || e}`);
-    console.error("SAVE ERROR", path, e);
+    console.error('[Attendance] SAVE ERROR on path', path, e);
     setAttendanceStatus(message, 'error');
     alert(message);
     return false;
@@ -2812,6 +2812,7 @@ function renderAttendanceTable() {
           }
         } catch (e) {
           // Invalid format while typing — keep showing previous value
+          console.debug('[Attendance] Parse error while typing:', e.message);
         }
       });
       input.addEventListener('blur', async () => {
