@@ -46,6 +46,30 @@ const APP_ROLES = ['Admin', 'Manager', 'Responsabile', 'Waiter'];
 const WEEK_DAYS_IT = ['Lunedì', 'Martedì', 'Mercoledì', 'Giovedì', 'Venerdì', 'Sabato', 'Domenica'];
 const SHIFT_TYPES = ['morning', 'evening', 'long', 'split', 'rest'];
 const LONG_SHIFT_MIN_HOURS = 7.5;
+const SHIFT_PRESET_WEEK_START = '2026-06-29';
+const SHIFT_PRESET_EMPLOYEE_ORDER = ['Vitalin', 'Alex', 'Diego', 'Silvano', 'Giuseppe', 'Davide', 'Anna', 'Sunkar', 'Lisa', 'Zara', 'Extra'];
+const SHIFT_PRESET_WEEK_SHIFTS = {
+  Vitalin: ['9:30-17:00', '09:30-Ch', 'R', '11:00-Ch', '9:30-17:00', '11:30-Ch', '9:30-17:00'],
+  Alex: ['9:30-17:00', '17:00-Ch', '17:00-Ch', '18:00-Ch', 'R', '18:00-Ch', '18:00-Ch'],
+  Diego: ['17:00-Ch', 'R', '09:30-Ch', '9:30-17:00', '11:00-Ch', '9:30-17:00', '11:30-Ch'],
+  Silvano: ['10:00-16:00', '09:30-Ch', '9:30-16:00', '9:30-16:00', 'R', '9:30-16:00', '9:30-16:00'],
+  Giuseppe: ['R', '12:00-Ch', '17:00-Ch', '10:00-17:00', '17:00-Ch', '12:00-Ch', '17:00-Ch'],
+  Davide: ['18:00-Ch', '17:00-Ch', '11:30-Ch', '17:00-Ch', '11:30-Ch', '17:00-Ch', 'R'],
+  Anna: ['11:00-Ch', '10:00-16:00', 'R', '11-15/19-23', '17:00-Ch', '10:00-17:00', '12:00-Ch'],
+  Sunkar: ['17:00-Ch', '11-15/19-23', '18:00-Ch', 'R', '10-15/19-23', '17:00-Ch', '11-15/19-23'],
+  Lisa: ['17:00-Ch', 'R', '10:30-17:00', '17:00-Ch', '9:30-17:00', 'R', '10:00-17:00'],
+  Zara: ['12-15/19-Ch', 'R', '11-15/19-23', '17:00-Ch', '17:00-Ch', '11-15/19-23', '18:00-Ch'],
+  Extra: ['', '', '', '', '', '', '']
+};
+const SHIFT_PRESET_WEEK_TOTALS = {
+  '2026-06-29': { M: 5, P: 4, S: 6 },
+  '2026-06-30': { M: 5, P: 4, S: 6 },
+  '2026-07-01': { M: 5, P: 4, S: 6 },
+  '2026-07-02': { M: 5, P: 4, S: 6 },
+  '2026-07-03': { M: 6, P: 5, S: 6 },
+  '2026-07-04': { M: 6, P: 5, S: 6 },
+  '2026-07-05': { M: 6, P: 5, S: 6 }
+};
 const MINUTES_PER_DAY = 24 * 60;
 const PROFILE_LOAD_TIMEOUT_MS = 3000;
 const PRIMARY_LOAD_TIMEOUT_MS = 3000;
@@ -534,6 +558,88 @@ function getCurrentWeekDates() {
   return getWeekDatesForDate(toISODate(base));
 }
 
+function isPresetWeekActive(weekDates = getCurrentWeekDates()) {
+  return weekDates?.[0]?.date === SHIFT_PRESET_WEEK_START;
+}
+
+function getPresetWeekEmployees(weekDates = getCurrentWeekDates()) {
+  if (!isPresetWeekActive(weekDates)) return [];
+  return SHIFT_PRESET_EMPLOYEE_ORDER.map(name => {
+    const matchingEmployee = employeesData.find(emp =>
+      emp.enabled !== false &&
+      normalizeName(emp.name).toLowerCase() === name.toLowerCase()
+    );
+    return { id: matchingEmployee?.id || name, name };
+  });
+}
+
+function inferPresetShiftType(shiftText) {
+  const text = String(shiftText || '').trim();
+  if (!text || text.toUpperCase() === 'R') return 'rest';
+  if (text.includes('/')) return 'split';
+  const { startToken, endToken } = extractStartEndFromText(text);
+  const hasClosing = /(?:-|\/)\s*ch\s*$/i.test(text);
+  const startHour = parseHour(startToken);
+  if (hasClosing) {
+    if (startHour !== null && startHour < 16) return 'long';
+    return 'evening';
+  }
+  const endHour = parseHour(endToken);
+  const duration = calculateShiftDuration(startHour, endHour);
+  if (duration !== null && duration >= LONG_SHIFT_MIN_HOURS) return 'long';
+  if (startHour !== null && startHour >= 16) return 'evening';
+  return 'morning';
+}
+
+function buildPresetWeekShifts(weekDates = getCurrentWeekDates()) {
+  if (!isPresetWeekActive(weekDates)) return [];
+  const weekEmployees = getPresetWeekEmployees(weekDates);
+  const dayDates = weekDates.map(day => day.date);
+  const shifts = [];
+  weekEmployees.forEach(employee => {
+    const schedule = SHIFT_PRESET_WEEK_SHIFTS[employee.name] || [];
+    schedule.forEach((value, index) => {
+      const shiftText = String(value || '').trim();
+      if (!shiftText) return;
+      const isRestDay = shiftText.toUpperCase() === 'R';
+      shifts.push({
+        uid: employee.id,
+        employeeName: employee.name,
+        date: dayDates[index],
+        weekStart: weekDates[0].date,
+        shiftText: isRestDay ? 'R' : shiftText,
+        startTime: null,
+        endTime: null,
+        shiftType: inferPresetShiftType(shiftText),
+        role: 'Waiter',
+        notes: '',
+        isRestDay,
+        _isPreset: true
+      });
+    });
+  });
+  return shifts;
+}
+
+function mergePresetWeekShifts(baseShifts = [], weekDates = getCurrentWeekDates()) {
+  const presetShifts = buildPresetWeekShifts(weekDates);
+  if (!presetShifts.length) return [...baseShifts];
+  const merged = new Map();
+  presetShifts.forEach(shift => merged.set(`${shift.uid}__${shift.date}`, shift));
+  baseShifts.forEach(shift => {
+    merged.set(`${shift.uid}__${shift.date}`, shift);
+  });
+  return [...merged.values()];
+}
+
+function getPresetWeekTotals(weekDates = getCurrentWeekDates()) {
+  if (!isPresetWeekActive(weekDates)) return [];
+  return weekDates.map(day => {
+    const total = SHIFT_PRESET_WEEK_TOTALS[day.date];
+    return total ? { ...total } : { M: 0, P: 0, S: 0 };
+  });
+}
+
 function getWeekStartDate(dateStr) {
   const date = parseISODate(dateStr);
   const day = date.getDay();
@@ -654,6 +760,8 @@ function classifyShift(shift) {
 }
 
 function getShiftEmployees() {
+  const presetEmployees = getPresetWeekEmployees();
+  if (presetEmployees.length) return presetEmployees;
   if (Array.isArray(employeesData) && employeesData.length > 0) {
     return employeesData
       .filter(emp => emp.enabled !== false)
@@ -1953,7 +2061,7 @@ async function loadCurrentUserProfile(user) {
 
 function shiftMapByKey() {
   const map = new Map();
-  shiftsData.forEach(shift => {
+  mergePresetWeekShifts(shiftsData).forEach(shift => {
     const key = `${shift.uid}__${shift.date}`;
     map.set(key, shift);
   });
@@ -2262,7 +2370,8 @@ async function loadAttendanceData(forceRefresh = false) {
       }
     });
     attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
-    attendanceShiftData = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    const fetchedShifts = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+    attendanceShiftData = mergePresetWeekShifts(fetchedShifts, weekDates);
     attendanceLoadedWeekStart = weekStart;
     setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
     renderAttendance();
@@ -2323,7 +2432,7 @@ async function saveAttendance() {
 
 function maybeShowTodayShiftPopup() {
   if (todayShiftPopupShown || canManageShifts() || !currentUserUid) return;
-  const shift = shiftsData.find(s => s.uid === currentUserUid && s.date === today());
+  const shift = mergePresetWeekShifts(shiftsData).find(s => s.uid === currentUserUid && s.date === today());
   if (!shift) return;
   todayShiftPopupShown = true;
   const text = getShiftDisplayText(shift);
@@ -2359,6 +2468,12 @@ function renderShiftTable(tableId, allowEdit) {
     });
     html += '</tr>';
   });
+  const presetTotals = getPresetWeekTotals(weekDates);
+  if (presetTotals.length === totals.length) {
+    presetTotals.forEach((dayTotal, index) => {
+      totals[index] = dayTotal;
+    });
+  }
   html += '<tr class="shift-total-row"><td class="shift-employee-cell">Totali</td>';
   totals.forEach(dayTotal => {
     html += `<td class="shift-total-cell"><div class="shift-total-line">M: ${dayTotal.M}</div><div class="shift-total-line">P: ${dayTotal.P}</div><div class="shift-total-line">S: ${dayTotal.S}</div></td>`;
@@ -2456,8 +2571,8 @@ function openShiftEditor(uid = '', date = '') {
   if (!canManageShifts()) return;
   populateShiftEmployeeOptions(uid);
   const targetDate = date || getCurrentWeekDates()[0].date;
-  const existing = shiftsData.find(s => s.uid === uid && s.date === targetDate);
-  editingShiftId = existing?.id || '';
+  const existing = shiftMapByKey().get(`${uid}__${targetDate}`) || null;
+  editingShiftId = existing && !existing._isPreset ? (existing.id || '') : '';
   $('shiftEmployee').value = uid || existing?.uid || '';
   $('shiftDate').value = targetDate;
   $('shiftStartTime').value = existing?.startTime || '';
