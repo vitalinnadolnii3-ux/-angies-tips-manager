@@ -2183,10 +2183,17 @@ async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDat
     rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart, day.date, currentUserUid)))
       .then(snap => ({ date: day.date, value: snap.exists() ? snap.val() : null }))
   );
-  const results = await Promise.all(reads);
+  const results = await Promise.allSettled(reads);
   const weekData = {};
-  results.forEach(({ date, value }) => {
-    weekData[date] = value ? { [currentUserUid]: value } : {};
+  results.forEach((result, index) => {
+    const date = weekDates[index]?.date;
+    if (!date) return;
+    if (result.status === 'fulfilled') {
+      weekData[date] = result.value.value ? { [currentUserUid]: result.value.value } : {};
+      return;
+    }
+    console.warn(`[Attendance] Lettura non riuscita per ${date}:`, result.reason);
+    weekData[date] = {};
   });
   return { weekStart, weekData };
 }
@@ -2221,6 +2228,19 @@ async function refreshAttendanceState(weekDates = getCurrentAttendanceWeekDates(
   else if (defaultMessage) setAttendanceStatus(defaultMessage, 'info');
   else setAttendanceStatus('');
   renderAttendance();
+}
+
+async function reloadAttendanceAfterMutation(date, successMessage) {
+  const weekStart = getWeekStartISO(date);
+  const currentWeekDates = getCurrentAttendanceWeekDates();
+  if (currentWeekDates?.[0]?.date === weekStart) {
+    await refreshAttendanceState(currentWeekDates, successMessage);
+  } else if (attendanceLoadedWeekStart === weekStart) {
+    await refreshAttendanceState(getWeekDatesForDate(date), successMessage);
+  }
+  if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
+    await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
+  }
 }
 
 async function persistAttendanceEditorIfDirty() {
@@ -2475,11 +2495,8 @@ async function saveAttendanceEntry(options = {}) {
     attendanceWeekEntries[date][uid] = payload;
     void writeLog(`attendance_save:${date}:${uid}`);
     closeAttendanceEditor();
-    await attachAttendanceListeners();
-    if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
-      await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
-    }
-    if (!silentSuccess) setAttendanceStatus('Entrata/uscita salvata e ricaricata.', 'info');
+    await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
+    if (silentSuccess) setAttendanceStatus('');
     return true;
   } catch (e) {
     console.error('[Attendance] Errore salvataggio:', e);
@@ -2500,11 +2517,7 @@ async function deleteAttendanceEntry() {
     if (attendanceWeekEntries[date]) delete attendanceWeekEntries[date][uid];
     void writeLog(`attendance_delete:${date}:${uid}`);
     closeAttendanceEditor();
-    await attachAttendanceListeners();
-    if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
-      await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
-    }
-    setAttendanceStatus('Entrata/uscita eliminata e ricaricata.', 'info');
+    await reloadAttendanceAfterMutation(date, 'Entrata/uscita eliminata e ricaricata.');
   } catch (e) {
     console.error('[Attendance] Errore eliminazione:', e);
     setAttendanceStatus(getFriendlyRtdbMessage(e, 'Errore eliminazione entrata/uscita.'), 'error');
@@ -3199,12 +3212,12 @@ async function populateHoursFromAttendance(date, options = {}) {
   const { forceRefresh = false, silent = false } = options;
   if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
   try {
+    const dayAttendance = await readAttendanceDayEntries(date, { forceRefresh });
     const rows = document.querySelectorAll('#hours tr[data-emp-id]');
     rows.forEach(row => {
       const input = row.querySelector('.hour');
       if (input) input.value = '0';
     });
-    const dayAttendance = await readAttendanceDayEntries(date, { forceRefresh });
     if (!dayAttendance || typeof dayAttendance !== 'object') {
       updateHourCalculations();
       return;
