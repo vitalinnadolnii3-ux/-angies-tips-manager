@@ -2164,8 +2164,7 @@ function markAttendanceEditorDirty() {
 
 function applyAttendanceWeekEntries(weekStart, weekData) {
   attendanceWeekEntries = {};
-  const dateKeys = Object.keys(weekData || {});
-  console.log('[Attendance] APPLY weekStart:', weekStart, '| date trovate:', dateKeys);
+  console.log('[Attendance] APPLY weekStart:', weekStart, '| date trovate:', Object.keys(weekData || {}));
   Object.entries(weekData || {}).forEach(([date, dateData]) => {
     if (dateData && typeof dateData === 'object') {
       attendanceWeekEntries[date] = dateData;
