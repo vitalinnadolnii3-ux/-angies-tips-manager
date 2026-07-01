@@ -42,6 +42,8 @@ let editingAttendanceUid = '';
 let editingAttendanceDate = '';
 let attendanceEditorDirty = false;
 let attendanceV2Unsub = null;
+let attendanceInlineEditingKey = '';
+const attendanceInlineSaveTimers = new Map();
 const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
 const RESTAURANT_ROLES = ['Direttore', 'Manager', 'Responsabile', 'Cameriere', 'Runner', 'Bartender'];
@@ -2151,27 +2153,108 @@ function calcEntryWorkedMinutes(entry) {
   return total;
 }
 
-function formatAttendanceOrario(entry) {
-  if (!entry) return '';
-  if (entry.isRestDay) return 'R';
-  const e1 = String(entry.entryTime1 || '').trim();
-  const x1 = String(entry.exitTime1 || '').trim();
-  const e2 = String(entry.entryTime2 || '').trim();
-  const x2 = String(entry.exitTime2 || '').trim();
-  if (!e1 && !x1 && !e2 && !x2) return '';
-  const hasSplit = e2 || x2;
-  if (hasSplit) {
-    const lines = [];
+function normalizeAttendanceTime(value) {
+  const totalMinutes = parseTimeToMinutes(value);
+  if (totalMinutes === null) return '';
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function buildAttendanceRawText({ entryTime1 = '', exitTime1 = '', entryTime2 = '', exitTime2 = '', isRestDay = false } = {}) {
+  if (isRestDay) return 'R';
+  const lines = [];
+  const e1 = normalizeAttendanceTime(entryTime1);
+  const x1 = normalizeAttendanceTime(exitTime1);
+  const e2 = normalizeAttendanceTime(entryTime2);
+  const x2 = normalizeAttendanceTime(exitTime2);
+  if (e2 || x2) {
     if (e1) lines.push(`X1 ${e1}`);
     if (x1) lines.push(`Y1 ${x1}`);
     if (e2) lines.push(`X2 ${e2}`);
     if (x2) lines.push(`Y2 ${x2}`);
     return lines.join('\n');
   }
-  const lines = [];
   if (e1) lines.push(`X ${e1}`);
   if (x1) lines.push(`Y ${x1}`);
   return lines.join('\n');
+}
+
+function normalizeAttendanceRawText(rawText) {
+  return String(rawText || '')
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean)
+    .join('\n');
+}
+
+function parseAttendanceRawText(rawText) {
+  const normalized = normalizeAttendanceRawText(rawText);
+  if (!normalized) {
+    return {
+      rawText: '',
+      entryTime1: '',
+      exitTime1: '',
+      entryTime2: '',
+      exitTime2: '',
+      isRestDay: false
+    };
+  }
+  const lines = normalized.split('\n');
+  if (lines.length === 1 && /^R$/i.test(lines[0])) {
+    return {
+      rawText: 'R',
+      entryTime1: '',
+      exitTime1: '',
+      entryTime2: '',
+      exitTime2: '',
+      isRestDay: true
+    };
+  }
+  let entryTime1 = '';
+  let exitTime1 = '';
+  let entryTime2 = '';
+  let exitTime2 = '';
+  for (const line of lines) {
+    const match = line.match(/^(X1|Y1|X2|Y2|X|Y)\s+(\d{1,2}:\d{2})$/i);
+    if (!match) throw new Error('Formato non valido. Usa X/Y, X1/Y1/X2/Y2 oppure R.');
+    const label = match[1].toUpperCase();
+    const time = normalizeAttendanceTime(match[2]);
+    if (!time) throw new Error(`Orario non valido nella riga "${line}".`);
+    if (label === 'X' || label === 'X1') {
+      if (entryTime1) throw new Error('Entrata 1 duplicata.');
+      entryTime1 = time;
+      continue;
+    }
+    if (label === 'Y' || label === 'Y1') {
+      if (exitTime1) throw new Error('Uscita 1 duplicata.');
+      exitTime1 = time;
+      continue;
+    }
+    if (label === 'X2') {
+      if (entryTime2) throw new Error('Entrata 2 duplicata.');
+      entryTime2 = time;
+      continue;
+    }
+    if (exitTime2) throw new Error('Uscita 2 duplicata.');
+    exitTime2 = time;
+  }
+  return {
+    rawText: buildAttendanceRawText({ entryTime1, exitTime1, entryTime2, exitTime2, isRestDay: false }),
+    entryTime1,
+    exitTime1,
+    entryTime2,
+    exitTime2,
+    isRestDay: false
+  };
+}
+
+function formatAttendanceOrario(entry) {
+  if (!entry) return '';
+  const rawText = normalizeAttendanceRawText(entry.rawText || '');
+  if (rawText) return rawText;
+  return buildAttendanceRawText(entry);
 }
 
 function stopAttendanceV2Listener() {
@@ -2253,11 +2336,229 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
     }
     return dayData;
   }
-  const oldSnap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
-  if (oldSnap.exists()) {
-    return oldSnap.val() || {};
-  }
   return null;
+}
+
+function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, entryTime1, exitTime1, entryTime2, exitTime2, isRestDay, notes }) {
+  const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
+  const workedMinutes = calcEntryWorkedMinutes(entryForCalc);
+  const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
+  return {
+    uid,
+    employeeName,
+    date,
+    weekStart,
+    rawText,
+    entryTime1,
+    exitTime1,
+    entryTime2,
+    exitTime2,
+    workedHours,
+    workedMinutes,
+    isRestDay,
+    notes,
+    updatedAt: new Date().toISOString(),
+    updatedBy: currentUserUid
+  };
+}
+
+async function persistAttendanceRecord(date, uid, record, { silentSuccess = false, successMessage = 'Entrata/uscita salvata.' } = {}) {
+  const weekStart = record?.weekStart || getWeekStartISO(date);
+  const path = attendanceV2Path(weekStart, date, uid);
+  console.log("ATTENDANCE SAVE START");
+  console.log("weekStart", weekStart);
+  console.log("date", date);
+  console.log("uid", uid);
+  console.log("path", `attendance/${weekStart}/${date}/${uid}`);
+  console.log("record", record);
+  try {
+    await rtdbSet(rtdbRef(rtdb, path), record);
+    setAttendanceLocalEntry(date, uid, record);
+    console.log("ATTENDANCE SAVE SUCCESS");
+    void writeLog(`attendance_save:${date}:${uid}`);
+    if (silentSuccess) setAttendanceStatus('');
+    else setAttendanceStatus(successMessage, 'info');
+    return true;
+  } catch (e) {
+    const message = getFriendlyRtdbMessage(e, `Errore salvataggio entrata/uscita: ${e?.message || e}`);
+    console.error('[Attendance] ERRORE salvataggio su path', path, ':', e);
+    setAttendanceStatus(message, 'error');
+    alert(message);
+    return false;
+  }
+}
+
+async function removeAttendanceRecord(date, uid, { successMessage = 'Entrata/uscita eliminata.', silentSuccess = false } = {}) {
+  const weekStart = getWeekStartISO(date);
+  const path = attendanceV2Path(weekStart, date, uid);
+  try {
+    await rtdbSet(rtdbRef(rtdb, path), null);
+    deleteAttendanceLocalEntry(date, uid);
+    void writeLog(`attendance_delete:${date}:${uid}`);
+    if (silentSuccess) setAttendanceStatus('');
+    else setAttendanceStatus(successMessage, 'info');
+    return true;
+  } catch (e) {
+    const message = getFriendlyRtdbMessage(e, `Errore salvataggio entrata/uscita: ${e?.message || e}`);
+    console.error('[Attendance] Errore eliminazione:', e);
+    setAttendanceStatus(message, 'error');
+    alert(message);
+    return false;
+  }
+}
+
+function autoResizeAttendanceInlineInput(input) {
+  if (!input) return;
+  input.style.height = 'auto';
+  input.style.height = `${Math.max(38, input.scrollHeight)}px`;
+}
+
+function getAttendanceInlineCellKey(uid, date) {
+  return `${date}__${uid}`;
+}
+
+function findAttendanceRow(uid) {
+  return [...document.querySelectorAll('#attendanceTable tr[data-att-row-uid]')]
+    .find(row => row.getAttribute('data-att-row-uid') === uid) || null;
+}
+
+function getAttendanceWorkedDisplay(entry) {
+  const workedMinutes = calcEntryWorkedMinutes(entry);
+  if (entry?.isRestDay) return 'R';
+  if (workedMinutes > 0) return formatWorkedHours(workedMinutes);
+  return '-';
+}
+
+function syncAttendanceCellClasses(cell, entry) {
+  if (!cell) return;
+  const text = formatAttendanceOrario(entry);
+  const isRest = Boolean(entry?.isRestDay);
+  const hasTimes = Boolean(text) && !isRest;
+  cell.classList.toggle('att-rest-cell', isRest);
+  cell.classList.toggle('att-filled-cell', hasTimes);
+  cell.classList.toggle('att-empty-cell', !text);
+}
+
+function updateAttendanceRowDisplay(uid) {
+  const row = findAttendanceRow(uid);
+  if (!row) return;
+  const weekDates = getCurrentAttendanceWeekDates();
+  let totalWorkedMinutes = 0;
+  weekDates.forEach(day => {
+    const entry = (attendanceWeekEntries?.[day.date] || {})[uid] || null;
+    const input = row.querySelector(`textarea[data-att-date="${day.date}"]`);
+    if (input) {
+      const nextValue = formatAttendanceOrario(entry);
+      if (attendanceInlineEditingKey !== getAttendanceInlineCellKey(uid, day.date) || document.activeElement !== input) {
+        input.value = nextValue;
+      }
+      input.dataset.initialValue = nextValue;
+      syncAttendanceCellClasses(input.closest('td'), entry);
+      autoResizeAttendanceInlineInput(input);
+    }
+    const hoursCell = row.querySelector(`[data-att-hours-date="${day.date}"]`);
+    if (hoursCell) hoursCell.textContent = getAttendanceWorkedDisplay(entry);
+    totalWorkedMinutes += calcEntryWorkedMinutes(entry);
+  });
+  const totalCell = row.querySelector('[data-att-total-cell]');
+  if (totalCell) totalCell.textContent = totalWorkedMinutes > 0 ? formatWorkedHours(totalWorkedMinutes) : '-';
+  const contractHours = Number(contractHoursData?.[uid] || 0);
+  const diffHours = contractHours > 0 ? ((totalWorkedMinutes / 60) - contractHours) : null;
+  const diffCell = row.querySelector('[data-att-diff-cell]');
+  if (diffCell) {
+    diffCell.textContent = diffHours !== null ? `${diffHours >= 0 ? '+' : ''}${num(diffHours)} h` : '-';
+    diffCell.classList.remove('att-diff-positive', 'att-diff-negative', 'att-diff-zero');
+    if (diffHours !== null) {
+      diffCell.classList.add(diffHours > 0 ? 'att-diff-positive' : diffHours < 0 ? 'att-diff-negative' : 'att-diff-zero');
+    }
+  }
+}
+
+async function saveAttendanceFromRawText(uid, date, rawText, options = {}) {
+  const { notes, silentSuccess = false, successMessage = 'Entrata/uscita salvata.', reloadAfterSave = true } = options;
+  const weekStart = getWeekStartISO(date);
+  const normalizedRawText = normalizeAttendanceRawText(rawText);
+  if (!normalizedRawText) {
+    const removed = await removeAttendanceRecord(date, uid, { successMessage: 'Entrata/uscita eliminata.', silentSuccess });
+    if (removed && reloadAfterSave) await reloadAttendanceAfterMutation(date, 'Entrata/uscita eliminata e ricaricata.');
+    return removed;
+  }
+  const parsed = parseAttendanceRawText(normalizedRawText);
+  const existingRecord = (attendanceWeekEntries?.[date] || {})[uid] || null;
+  const employee = getAttendanceEmployees().find(e => e.id === uid);
+  const employeeName = employee?.name || existingRecord?.employeeName || '';
+  const record = buildAttendanceRecord({
+    uid,
+    employeeName,
+    date,
+    weekStart,
+    rawText: parsed.rawText,
+    entryTime1: parsed.entryTime1,
+    exitTime1: parsed.exitTime1,
+    entryTime2: parsed.entryTime2,
+    exitTime2: parsed.exitTime2,
+    isRestDay: parsed.isRestDay,
+    notes: typeof notes === 'string' ? notes : String(existingRecord?.notes || '')
+  });
+  const saved = await persistAttendanceRecord(date, uid, record, { silentSuccess, successMessage });
+  if (saved && reloadAfterSave) await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
+  return saved;
+}
+
+async function saveAttendanceInlineCell(input, { force = false } = {}) {
+  if (!input) return false;
+  const uid = input.getAttribute('data-att-uid') || '';
+  const date = input.getAttribute('data-att-date') || '';
+  if (!uid || !date) return false;
+  const rawText = normalizeAttendanceRawText(input.value);
+  if (!force && rawText === (input.dataset.initialValue || '')) return true;
+  const key = getAttendanceInlineCellKey(uid, date);
+  try {
+    const saved = await saveAttendanceFromRawText(uid, date, rawText, { silentSuccess: true, reloadAfterSave: false });
+    if (!saved) return false;
+    const savedRecord = (attendanceWeekEntries?.[date] || {})[uid] || null;
+    input.dataset.initialValue = formatAttendanceOrario(savedRecord);
+    if (document.activeElement !== input) input.value = input.dataset.initialValue;
+    updateAttendanceRowDisplay(uid);
+    await syncNewDayHoursForAttendanceDate(date);
+    return true;
+  } catch (e) {
+    setAttendanceStatus(e?.message || 'Formato entrata/uscita non valido.', 'error');
+    return false;
+  } finally {
+    if (attendanceInlineEditingKey === key && document.activeElement !== input) attendanceInlineEditingKey = '';
+  }
+}
+
+function scheduleAttendanceInlineSave(input) {
+  if (!input) return;
+  const uid = input.getAttribute('data-att-uid') || '';
+  const date = input.getAttribute('data-att-date') || '';
+  if (!uid || !date) return;
+  const key = getAttendanceInlineCellKey(uid, date);
+  attendanceInlineEditingKey = key;
+  clearTimeout(attendanceInlineSaveTimers.get(key));
+  const timer = setTimeout(() => {
+    attendanceInlineSaveTimers.delete(key);
+    void saveAttendanceInlineCell(input);
+  }, 500);
+  attendanceInlineSaveTimers.set(key, timer);
+}
+
+async function flushAttendanceInlineSave(input) {
+  if (!input) return false;
+  const uid = input.getAttribute('data-att-uid') || '';
+  const date = input.getAttribute('data-att-date') || '';
+  const key = getAttendanceInlineCellKey(uid, date);
+  clearTimeout(attendanceInlineSaveTimers.get(key));
+  attendanceInlineSaveTimers.delete(key);
+  return saveAttendanceInlineCell(input, { force: true });
+}
+
+async function syncNewDayHoursForAttendanceDate(date) {
+  if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
+    await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
+  }
 }
 
 async function refreshAttendanceState(weekDates = getCurrentAttendanceWeekDates(), successMessage = null) {
@@ -2282,10 +2583,7 @@ async function reloadAttendanceAfterMutation(date, successMessage) {
   // Log i dati riletti dallo stato locale dopo il reload
   const entryRiletta = (attendanceWeekEntries?.[date] || {});
   console.log('[Attendance] RELOAD dati riletti per date', date, ':', JSON.stringify(entryRiletta));
-  // Aggiorna Nuova Giornata se è la pagina attiva e la data corrisponde
-  if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
-    await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
-  }
+  await syncNewDayHoursForAttendanceDate(date);
 }
 
 async function persistAttendanceEditorIfDirty() {
@@ -2436,8 +2734,9 @@ function renderAttendanceTable() {
       const isRest = entry?.isRestDay;
       const hasTimes = orarioText && !isRest;
       const cellClass = isRest ? 'att-orario-cell att-rest-cell' : (hasTimes ? 'att-orario-cell att-filled-cell' : 'att-orario-cell att-empty-cell');
+      const orarioAttr = esc(orarioText).replace(/\n/g, '&#10;');
       if (canEdit) {
-        html += `<td class="${cellClass} att-orario-clickable" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}">${orarioHtml}</td>`;
+        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="X 10:00&#10;Y 17:00">${esc(orarioText)}</textarea></td>`;
       } else {
         html += `<td class="${cellClass}">${orarioHtml}</td>`;
       }
@@ -2449,15 +2748,15 @@ function renderAttendanceTable() {
       } else {
         oreDisplay = '-';
       }
-      html += `<td class="att-ore-cell">${oreDisplay}</td>`;
+      html += `<td class="att-ore-cell" data-att-hours-date="${esc(day.date)}">${oreDisplay}</td>`;
     });
     const oreFatteDisplay = totalWorkedMinutes > 0 ? esc(formatWorkedHours(totalWorkedMinutes)) : '-';
     const totalHoursNum = totalWorkedMinutes / 60;
     const diffHours = contractHours > 0 ? totalHoursNum - contractHours : null;
     const diffDisplay = diffHours !== null ? `${diffHours >= 0 ? '+' : ''}${num(diffHours)} h` : '-';
     const diffClass = diffHours === null ? '' : (diffHours > 0 ? 'att-diff-positive' : diffHours < 0 ? 'att-diff-negative' : 'att-diff-zero');
-    html += `<td class="att-total-cell">${oreFatteDisplay}</td>`;
-    html += `<td class="att-diff-cell ${diffClass}">${diffDisplay}</td>`;
+    html += `<td class="att-total-cell" data-att-total-cell="true">${oreFatteDisplay}</td>`;
+    html += `<td class="att-diff-cell ${diffClass}" data-att-diff-cell="true">${diffDisplay}</td>`;
     html += '</tr>';
   });
   html += '</tbody>';
@@ -2471,12 +2770,24 @@ function renderAttendanceTable() {
         void saveContractHours(uid, input.value);
       });
     });
-    table.querySelectorAll('.att-orario-clickable').forEach(cell => {
-      cell.addEventListener('click', async () => {
-        const uid = cell.getAttribute('data-att-uid');
-        const date = cell.getAttribute('data-att-date');
+    table.querySelectorAll('.att-orario-inline').forEach(input => {
+      autoResizeAttendanceInlineInput(input);
+      input.addEventListener('focus', () => {
+        attendanceInlineEditingKey = getAttendanceInlineCellKey(input.getAttribute('data-att-uid') || '', input.getAttribute('data-att-date') || '');
+      });
+      input.addEventListener('input', () => {
+        autoResizeAttendanceInlineInput(input);
+        scheduleAttendanceInlineSave(input);
+      });
+      input.addEventListener('blur', async () => {
+        await flushAttendanceInlineSave(input);
+        attendanceInlineEditingKey = '';
+      });
+      input.addEventListener('dblclick', async () => {
+        const uid = input.getAttribute('data-att-uid');
+        const date = input.getAttribute('data-att-date');
         if (!uid || !date) return;
-        const saved = await persistAttendanceEditorIfDirty();
+        const saved = await flushAttendanceInlineSave(input);
         if (!saved) return;
         openAttendanceEditor(uid, date);
       });
@@ -2524,6 +2835,11 @@ async function attachAttendanceListeners() {
   const unsub = rtdbOnValue(weekRef, snap => {
     applyAttendanceWeekEntries(weekStart, snap.exists() ? (snap.val() || {}) : {});
     setAttendanceStatus('');
+    if (attendanceInlineEditingKey) {
+      const [, activeUid = ''] = attendanceInlineEditingKey.split('__');
+      if (activeUid) updateAttendanceRowDisplay(activeUid);
+      return;
+    }
     renderAttendance();
   }, err => {
     console.error('[Attendance] Errore listener RTDB:', err);
@@ -2579,54 +2895,28 @@ async function saveAttendanceEntry(options = {}) {
   const entryTime2 = isRestDay ? '' : String($('attEntry2')?.value || '').trim();
   const exitTime2 = isRestDay ? '' : String($('attExit2')?.value || '').trim();
   const notes = String($('attNotes')?.value || '').trim();
+  const rawText = buildAttendanceRawText({ entryTime1, exitTime1, entryTime2, exitTime2, isRestDay });
   const employee = getAttendanceEmployees().find(e => e.id === uid);
   const employeeName = employee?.name || '';
-  const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
-  const workedMinutes = calcEntryWorkedMinutes(entryForCalc); // returns 0 when isRestDay=true
-  const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
-  const record = {
+  const record = buildAttendanceRecord({
     uid,
     employeeName,
     date,
     weekStart,
-    entryTime1,
-    exitTime1,
-    entryTime2,
-    exitTime2,
+    rawText,
+    entryTime1: normalizeAttendanceTime(entryTime1),
+    exitTime1: normalizeAttendanceTime(exitTime1),
+    entryTime2: normalizeAttendanceTime(entryTime2),
+    exitTime2: normalizeAttendanceTime(exitTime2),
     isRestDay,
-    workedHours,
-    workedMinutes,
-    notes,
-    updatedAt: new Date().toISOString(),
-    updatedBy: currentUserUid
-  };
-  const savePath = attendanceV2Path(weekStart, date, uid);
-  console.log('SAVE ATTENDANCE CLICKED');
-  console.log('uid:', uid);
-  console.log('date:', date);
-  console.log('weekStart:', weekStart);
-  console.log('RTDB path:', `attendance/${weekStart}/${date}/${uid}`);
-  console.log('record:', record);
-  console.log('[Attendance] SAVE uid:', uid, '| employeeName:', employeeName, '| date:', date, '| weekStart:', weekStart);
-  console.log('[Attendance] SAVE path RTDB:', savePath);
-  console.log('[Attendance] SAVE workedHours:', workedHours, '| workedMinutes:', workedMinutes, '| isRestDay:', isRestDay);
-  console.log('[Attendance] SAVE dati salvati:', JSON.stringify(record));
-  try {
-    await rtdbSet(rtdbRef(rtdb, savePath), record);
-    console.log('[Attendance] SAVE Firebase OK per path:', savePath);
-    setAttendanceLocalEntry(date, uid, record);
-    void writeLog(`attendance_save:${date}:${uid}`);
-    closeAttendanceEditor();
-    renderAttendanceTable();
-    await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
-    if (silentSuccess) setAttendanceStatus('');
-    return true;
-  } catch (e) {
-    console.error('[Attendance] ERRORE salvataggio su path', savePath, ':', e);
-    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Errore salvataggio entrata/uscita.'), 'error');
-    alert(getFriendlyRtdbMessage(e, 'Errore salvataggio entrata/uscita.'));
-    return false;
-  }
+    notes
+  });
+  const saved = await persistAttendanceRecord(date, uid, record, { silentSuccess, successMessage: 'Entrata/uscita salvata.' });
+  if (!saved) return false;
+  closeAttendanceEditor();
+  renderAttendanceTable();
+  await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
+  return true;
 }
 
 async function deleteAttendanceEntry() {
@@ -2635,17 +2925,10 @@ async function deleteAttendanceEntry() {
   const date = editingAttendanceDate;
   if (!uid || !date) return;
   if (!confirm('Eliminare questa entrata/uscita?')) return;
-  const weekStart = getWeekStartISO(date);
-  try {
-    await rtdbSet(rtdbRef(rtdb, attendanceV2Path(weekStart, date, uid)), null);
-    deleteAttendanceLocalEntry(date, uid);
-    void writeLog(`attendance_delete:${date}:${uid}`);
-    closeAttendanceEditor();
-    await reloadAttendanceAfterMutation(date, 'Entrata/uscita eliminata e ricaricata.');
-  } catch (e) {
-    console.error('[Attendance] Errore eliminazione:', e);
-    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Errore eliminazione entrata/uscita.'), 'error');
-  }
+  const removed = await removeAttendanceRecord(date, uid);
+  if (!removed) return;
+  closeAttendanceEditor();
+  await reloadAttendanceAfterMutation(date, 'Entrata/uscita eliminata e ricaricata.');
 }
 
 async function saveContractHours(uid, hours) {

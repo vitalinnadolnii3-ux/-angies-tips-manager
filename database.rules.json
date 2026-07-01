@@ -32,7 +32,7 @@
           "$uid": {
             ".read": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager' || root.child('users').child(auth.uid).child('role').val() === 'responsible')",
             ".write": "auth != null && root.child('users').child(auth.uid).child('active').val() === true && (root.child('users').child(auth.uid).child('role').val() === 'admin' || root.child('users').child(auth.uid).child('role').val() === 'manager' || root.child('users').child(auth.uid).child('role').val() === 'responsible')",
-            ".validate": "newData.val() == null || (newData.hasChildren(['uid','employeeName','date','workedHours','updatedAt','updatedBy']) && newData.child('uid').val() === $uid && newData.child('date').val() === $date)",
+            ".validate": "newData.val() == null || (newData.hasChildren(['uid','employeeName','date','weekStart','rawText','workedHours','workedMinutes','isRestDay','notes','updatedAt','updatedBy']) && newData.child('uid').val() === $uid && newData.child('date').val() === $date && newData.child('weekStart').val() === $weekStart)",
             "uid": {
               ".validate": "newData.isString() && newData.val() === $uid"
             },
@@ -43,7 +43,10 @@
               ".validate": "newData.isString() && newData.val() === $date"
             },
             "weekStart": {
-              ".validate": "!newData.exists() || newData.isString()"
+              ".validate": "newData.isString() && newData.val() === $weekStart"
+            },
+            "rawText": {
+              ".validate": "newData.isString()"
             },
             "entryTime1": {
               ".validate": "!newData.exists() || newData.isString()"
@@ -58,16 +61,16 @@
               ".validate": "!newData.exists() || newData.isString()"
             },
             "isRestDay": {
-              ".validate": "!newData.exists() || newData.isBoolean()"
+              ".validate": "newData.isBoolean()"
             },
             "workedHours": {
               ".validate": "newData.isNumber() && newData.val() >= 0"
             },
             "workedMinutes": {
-              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0)"
+              ".validate": "newData.isNumber() && newData.val() >= 0"
             },
             "notes": {
-              ".validate": "!newData.exists() || newData.isString()"
+              ".validate": "newData.isString()"
             },
             "updatedAt": {
               ".validate": "newData.isString()"
