@@ -193,6 +193,7 @@
         </div>
         <div id="shiftEditor" class="panel hidden">
           <h3>Modifica turno</h3>
+          <div id="shiftEditorContext" class="shift-editor-context hidden"></div>
           <div class="panel grid">
             <label>Dipendente
               <select id="shiftEmployee"></select>
@@ -200,11 +201,11 @@
             <label>Data<input id="shiftDate" type="date"></label>
             <label>Tipo turno
               <select id="shiftType">
-                <option value="morning">Morning</option>
-                <option value="evening">Evening</option>
-                <option value="long">Long</option>
-                <option value="split">Split</option>
-                <option value="rest">Rest</option>
+                <option value="morning">M – Mattina</option>
+                <option value="evening">P – Pomeriggio / Sera</option>
+                <option value="long">S – Lungo</option>
+                <option value="split">S – Spezzato</option>
+                <option value="rest">R – Riposo</option>
               </select>
             </label>
             <label id="shiftStartWrap">Inizio<input id="shiftStartTime" type="time"></label>

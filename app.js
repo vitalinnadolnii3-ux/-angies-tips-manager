@@ -2427,6 +2427,8 @@ function clearShiftEditor() {
   $('shiftRestDay').checked = false;
   syncShiftEditorRestState();
   $('shiftDeleteBtn').classList.add('hidden');
+  const ctx = $('shiftEditorContext');
+  if (ctx) { ctx.textContent = ''; ctx.classList.add('hidden'); }
   $('shiftEditor').classList.add('hidden');
 }
 
@@ -2456,7 +2458,22 @@ function openShiftEditor(uid = '', date = '') {
   $('shiftRestDay').checked = Boolean(existing?.isRestDay) || $('shiftType').value === 'rest';
   syncShiftEditorRestState();
   $('shiftDeleteBtn').classList.toggle('hidden', !editingShiftId || !canManageShifts());
+  const ctx = $('shiftEditorContext');
+  if (ctx) {
+    const selectedOption = $('shiftEmployee').options[$('shiftEmployee').selectedIndex];
+    const empName = selectedOption && selectedOption.value ? selectedOption.text : '';
+    const weekDay = getCurrentWeekDates().find(d => d.date === targetDate);
+    const dayLabel = weekDay ? `${weekDay.dayName} ${weekDay.shortDate}` : fmt(targetDate);
+    if (empName && dayLabel) {
+      ctx.textContent = `📅 ${dayLabel} — ${empName}`;
+      ctx.classList.remove('hidden');
+    } else {
+      ctx.textContent = '';
+      ctx.classList.add('hidden');
+    }
+  }
   $('shiftEditor').classList.remove('hidden');
+  $('shiftEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 async function saveShift() {
