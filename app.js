@@ -40,6 +40,7 @@ let attendanceWeekEntries = {};
 let contractHoursData = {};
 let editingAttendanceUid = '';
 let editingAttendanceDate = '';
+let attendanceEditorDirty = false;
 let attendanceV2Unsub = null;
 const SESSION_KEY = 'angiesManagerUser';
 const EMPLOYEE_ROLES = ['Admin', 'Manager', 'Responsible', 'Waiter', 'Kitchen'];
@@ -163,6 +164,18 @@ function getFriendlyFirestoreMessage(error, fallback = 'Si è verificato un erro
     return 'Sessione scaduta. Effettua di nuovo il login.';
   }
   return fallback;
+}
+
+function getFriendlyRtdbMessage(error, fallback = 'Si è verificato un errore su Firebase.') {
+  const code = String(error?.code || '').trim().toLowerCase();
+  const message = String(error?.message || '').trim();
+  if (code === 'permission-denied') {
+    return 'Firebase Realtime Database ha negato l’accesso a entrata/uscita. Verifica i permessi di admin/manager/responsabile e riprova.';
+  }
+  if (code === 'network-request-failed' || code === 'unavailable') {
+    return 'Firebase Realtime Database non è raggiungibile. Controlla la connessione e riprova.';
+  }
+  return getErrorDetails(error, fallback || message || 'Si è verificato un errore su Firebase.');
 }
 
 function getEmployeeStatusLabel(active) {
@@ -1198,10 +1211,11 @@ async function ensureUsersLoaded() {
 }
 
 async function ensureAttendanceLoaded() {
-  if (sectionLoaded.attendance) return;
+  const currentWeekStart = getCurrentAttendanceWeekDates()?.[0]?.date || '';
+  if (sectionLoaded.attendance && attendanceLoadedWeekStart === currentWeekStart) return;
   if (attendanceLoadPromise) return attendanceLoadPromise;
   attendanceLoadPromise = Promise.resolve().then(() => {
-    attachAttendanceListeners();
+    return attachAttendanceListeners();
   }).finally(() => {
     attendanceLoadPromise = null;
   });
@@ -2142,6 +2156,98 @@ function stopAttendanceV2Listener() {
   sectionLoaded.attendance = false;
 }
 
+function markAttendanceEditorDirty() {
+  if (!editingAttendanceUid || !editingAttendanceDate) return;
+  attendanceEditorDirty = true;
+}
+
+function applyAttendanceWeekEntries(weekStart, weekData) {
+  attendanceWeekEntries = {};
+  Object.entries(weekData || {}).forEach(([date, dateData]) => {
+    if (dateData && typeof dateData === 'object') {
+      attendanceWeekEntries[date] = dateData;
+    }
+  });
+  sectionLoaded.attendance = true;
+  attendanceLoadedWeekStart = weekStart;
+}
+
+async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDates()) {
+  const weekStart = weekDates?.[0]?.date || '';
+  if (!weekStart) return { weekStart: '', weekData: {} };
+  if (canViewAllAttendance()) {
+    const snap = await rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart)));
+    return { weekStart, weekData: snap.exists() ? (snap.val() || {}) : {} };
+  }
+  const reads = weekDates.map(day =>
+    rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart, day.date, currentUserUid)))
+      .then(snap => ({ date: day.date, value: snap.exists() ? snap.val() : null }))
+  );
+  const results = await Promise.allSettled(reads);
+  const weekData = {};
+  results.forEach((result, index) => {
+    const date = weekDates[index]?.date;
+    if (!date) return;
+    if (result.status === 'fulfilled') {
+      weekData[date] = result.value.value ? { [currentUserUid]: result.value.value } : {};
+      return;
+    }
+    console.warn(`[Attendance] Lettura non riuscita per ${date}:`, result.reason);
+    weekData[date] = {};
+  });
+  return { weekStart, weekData };
+}
+
+async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
+  if (!date) return null;
+  const weekStart = getWeekStartISO(date);
+  const cached = attendanceWeekEntries?.[date];
+  if (!forceRefresh && attendanceLoadedWeekStart === weekStart && cached && typeof cached === 'object' && Object.keys(cached).length > 0) {
+    return cached;
+  }
+  const daySnap = await rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart, date)));
+  if (daySnap.exists()) {
+    const dayData = daySnap.val() || {};
+    if (attendanceLoadedWeekStart === weekStart) {
+      attendanceWeekEntries[date] = dayData;
+    }
+    return dayData;
+  }
+  const oldSnap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
+  if (oldSnap.exists()) {
+    return oldSnap.val() || {};
+  }
+  return null;
+}
+
+async function refreshAttendanceState(weekDates = getCurrentAttendanceWeekDates(), successMessage = null) {
+  const { weekStart, weekData } = await readAttendanceWeekEntries(weekDates);
+  applyAttendanceWeekEntries(weekStart, weekData);
+  const defaultMessage = canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.';
+  if (successMessage != null) setAttendanceStatus(successMessage, 'info');
+  else if (defaultMessage) setAttendanceStatus(defaultMessage, 'info');
+  else setAttendanceStatus('');
+  renderAttendance();
+}
+
+async function reloadAttendanceAfterMutation(date, successMessage) {
+  const weekStart = getWeekStartISO(date);
+  const currentWeekDates = getCurrentAttendanceWeekDates();
+  if (currentWeekDates?.[0]?.date === weekStart) {
+    await refreshAttendanceState(currentWeekDates, successMessage);
+  } else if (attendanceLoadedWeekStart === weekStart) {
+    await refreshAttendanceState(getWeekDatesForDate(date), successMessage);
+  }
+  if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
+    await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
+  }
+}
+
+async function persistAttendanceEditorIfDirty() {
+  if (!attendanceEditorDirty || !editingAttendanceUid || !editingAttendanceDate) return true;
+  return saveAttendanceEntry({ silentSuccess: true });
+}
+
 function syncAttendanceRestDayState() {
   const isRest = $('attRestDay') ? $('attRestDay').checked : false;
   const hide = isRest;
@@ -2179,11 +2285,13 @@ function openAttendanceEditor(uid, date) {
     $('attendanceEditor').classList.remove('hidden');
     $('attendanceEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
+  attendanceEditorDirty = false;
 }
 
 function closeAttendanceEditor() {
   editingAttendanceUid = '';
   editingAttendanceDate = '';
+  attendanceEditorDirty = false;
   if ($('attEntry1')) $('attEntry1').value = '';
   if ($('attExit1')) $('attExit1').value = '';
   if ($('attEntry2')) $('attEntry2').value = '';
@@ -2283,10 +2391,13 @@ function renderAttendanceTable() {
       });
     });
     table.querySelectorAll('.att-orario-clickable').forEach(cell => {
-      cell.addEventListener('click', () => {
+      cell.addEventListener('click', async () => {
         const uid = cell.getAttribute('data-att-uid');
         const date = cell.getAttribute('data-att-date');
-        if (uid && date) openAttendanceEditor(uid, date);
+        if (!uid || !date) return;
+        const saved = await persistAttendanceEditorIfDirty();
+        if (!saved) return;
+        openAttendanceEditor(uid, date);
       });
     });
   }
@@ -2296,10 +2407,11 @@ function renderAttendance() {
   renderAttendanceTable();
 }
 
-function attachAttendanceListeners() {
+async function attachAttendanceListeners() {
   stopAttendanceV2Listener();
   if (!currentUserUid) {
     attendanceWeekEntries = {};
+    attendanceLoadedWeekStart = '';
     contractHoursData = {};
     setAttendanceStatus('');
     renderAttendance();
@@ -2317,61 +2429,42 @@ function attachAttendanceListeners() {
   }).catch(e => {
     console.warn('[Attendance] Ore contrattuali non caricate:', e);
   });
-  if (canViewAllAttendance()) {
-    const weekRef = rtdbRef(rtdb, `attendance/${weekStart}`);
-    const unsub = rtdbOnValue(weekRef, snap => {
-      const weekData = snap.exists() ? snap.val() : {};
-      attendanceWeekEntries = {};
-      Object.entries(weekData || {}).forEach(([date, dateData]) => {
-        if (dateData && typeof dateData === 'object') {
-          attendanceWeekEntries[date] = dateData;
-        }
-      });
-      sectionLoaded.attendance = true;
-      attendanceLoadedWeekStart = weekStart;
-      setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
-      renderAttendance();
-    }, err => {
-      console.error('[Attendance] Errore listener RTDB:', err);
-      sectionLoaded.attendance = false;
-      setAttendanceStatus('Impossibile caricare entrata e uscita.', 'error');
-    });
-    attendanceV2Unsub = unsub;
-  } else {
-    // Waiter: load own entries for each day
-    const reads = weekDates.map(day =>
-      rtdbGet(rtdbRef(rtdb, `attendance/${weekStart}/${day.date}/${currentUserUid}`))
-        .then(snap => ({ date: day.date, value: snap.exists() ? snap.val() : null }))
-    );
-    Promise.all(reads).then(results => {
-      attendanceWeekEntries = {};
-      results.forEach(({ date, value }) => {
-        attendanceWeekEntries[date] = value ? { [currentUserUid]: value } : {};
-      });
-      sectionLoaded.attendance = true;
-      attendanceLoadedWeekStart = weekStart;
-      setAttendanceStatus('Visualizzi solo la tua entrata e uscita.', 'info');
-      renderAttendance();
-    }).catch(e => {
-      console.error('[Attendance] Errore caricamento:', e);
-      sectionLoaded.attendance = false;
-      setAttendanceStatus('Impossibile caricare entrata e uscita.', 'error');
-    });
+  try {
+    await refreshAttendanceState(weekDates);
+  } catch (e) {
+    console.error('[Attendance] Errore caricamento:', e);
+    sectionLoaded.attendance = false;
+    attendanceLoadedWeekStart = '';
+    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Impossibile caricare entrata e uscita.'), 'error');
+    return;
   }
+  if (!canViewAllAttendance()) return;
+  const weekRef = rtdbRef(rtdb, attendanceV2Path(weekStart));
+  const unsub = rtdbOnValue(weekRef, snap => {
+    applyAttendanceWeekEntries(weekStart, snap.exists() ? (snap.val() || {}) : {});
+    setAttendanceStatus('');
+    renderAttendance();
+  }, err => {
+    console.error('[Attendance] Errore listener RTDB:', err);
+    sectionLoaded.attendance = false;
+    attendanceLoadedWeekStart = '';
+    setAttendanceStatus(getFriendlyRtdbMessage(err, 'Impossibile aggiornare entrata e uscita.'), 'error');
+  });
+  attendanceV2Unsub = unsub;
 }
 
 async function loadAttendanceData(forceRefresh = false) {
-  attachAttendanceListeners();
+  return attachAttendanceListeners();
 }
 
-async function saveAttendanceEntry() {
-  if (!canManageAttendance()) { setAttendanceStatus('Accesso consentito solo ad Admin/Manager/Responsabile.', 'error'); return; }
+async function saveAttendanceEntry(options = {}) {
+  const { silentSuccess = false } = options;
+  if (!canManageAttendance()) { setAttendanceStatus('Accesso consentito solo ad Admin/Manager/Responsabile.', 'error'); return false; }
   const uid = editingAttendanceUid;
   const date = editingAttendanceDate;
-  if (!uid || !date) { setAttendanceStatus('Nessuna cella selezionata.', 'error'); return; }
-  if (!currentUserUid) { setAttendanceStatus('Sessione non valida. Effettua di nuovo il login.', 'error'); return; }
-  const weekDates = getCurrentAttendanceWeekDates();
-  const weekStart = weekDates[0].date;
+  if (!uid || !date) { setAttendanceStatus('Nessuna cella selezionata.', 'error'); return false; }
+  if (!currentUserUid) { setAttendanceStatus('Sessione non valida. Effettua di nuovo il login.', 'error'); return false; }
+  const weekStart = getWeekStartISO(date);
   const isRestDay = $('attRestDay') ? $('attRestDay').checked : false;
   const entryTime1 = isRestDay ? '' : String($('attEntry1')?.value || '').trim();
   const exitTime1 = isRestDay ? '' : String($('attExit1')?.value || '').trim();
@@ -2398,16 +2491,17 @@ async function saveAttendanceEntry() {
   };
   try {
     await rtdbSet(rtdbRef(rtdb, attendanceV2Path(weekStart, date, uid)), payload);
-    // Update local cache immediately for non-realtime path (waiter)
     if (!attendanceWeekEntries[date]) attendanceWeekEntries[date] = {};
     attendanceWeekEntries[date][uid] = payload;
     void writeLog(`attendance_save:${date}:${uid}`);
     closeAttendanceEditor();
-    setAttendanceStatus('Entrata/uscita salvata.', 'info');
-    if (!canViewAllAttendance()) renderAttendance();
+    await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
+    if (silentSuccess) setAttendanceStatus('');
+    return true;
   } catch (e) {
     console.error('[Attendance] Errore salvataggio:', e);
-    setAttendanceStatus('Errore salvataggio: ' + e.message, 'error');
+    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Errore salvataggio entrata/uscita.'), 'error');
+    return false;
   }
 }
 
@@ -2417,18 +2511,16 @@ async function deleteAttendanceEntry() {
   const date = editingAttendanceDate;
   if (!uid || !date) return;
   if (!confirm('Eliminare questa entrata/uscita?')) return;
-  const weekDates = getCurrentAttendanceWeekDates();
-  const weekStart = weekDates[0].date;
+  const weekStart = getWeekStartISO(date);
   try {
     await rtdbSet(rtdbRef(rtdb, attendanceV2Path(weekStart, date, uid)), null);
     if (attendanceWeekEntries[date]) delete attendanceWeekEntries[date][uid];
     void writeLog(`attendance_delete:${date}:${uid}`);
     closeAttendanceEditor();
-    setAttendanceStatus('Entrata/uscita eliminata.', 'info');
-    if (!canViewAllAttendance()) renderAttendance();
+    await reloadAttendanceAfterMutation(date, 'Entrata/uscita eliminata e ricaricata.');
   } catch (e) {
     console.error('[Attendance] Errore eliminazione:', e);
-    setAttendanceStatus('Errore eliminazione: ' + e.message, 'error');
+    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Errore eliminazione entrata/uscita.'), 'error');
   }
 }
 
@@ -2442,6 +2534,7 @@ async function saveContractHours(uid, hours) {
     renderAttendanceTable();
   } catch (e) {
     console.warn('[Attendance] Impossibile salvare ore contrattuali:', e);
+    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Impossibile salvare le ore contrattuali.'), 'error');
   }
 }
 
@@ -2800,25 +2893,37 @@ function init() {
   $('shiftSaveBtn').onclick = saveShift;
   $('shiftDeleteBtn').onclick = deleteShift;
   $('shiftCancelBtn').onclick = clearShiftEditor;
-  $('attendancePrevWeekBtn').onclick = () => {
+  $('attendancePrevWeekBtn').onclick = async () => {
+    const saved = await persistAttendanceEditorIfDirty();
+    if (!saved) return;
     attendanceWeekOffset -= 1;
     closeAttendanceEditor();
-    attachAttendanceListeners();
+    await attachAttendanceListeners();
   };
-  $('attendanceCurrentWeekBtn').onclick = () => {
+  $('attendanceCurrentWeekBtn').onclick = async () => {
+    const saved = await persistAttendanceEditorIfDirty();
+    if (!saved) return;
     attendanceWeekOffset = 0;
     closeAttendanceEditor();
-    attachAttendanceListeners();
+    await attachAttendanceListeners();
   };
-  $('attendanceNextWeekBtn').onclick = () => {
+  $('attendanceNextWeekBtn').onclick = async () => {
+    const saved = await persistAttendanceEditorIfDirty();
+    if (!saved) return;
     attendanceWeekOffset += 1;
     closeAttendanceEditor();
-    attachAttendanceListeners();
+    await attachAttendanceListeners();
   };
   $('attSaveEntryBtn').onclick = saveAttendanceEntry;
   $('attDeleteEntryBtn').onclick = deleteAttendanceEntry;
   $('attCancelEntryBtn').onclick = closeAttendanceEditor;
-  $('attRestDay').onchange = syncAttendanceRestDayState;
+  ['attEntry1', 'attExit1', 'attEntry2', 'attExit2', 'attNotes'].forEach(id => {
+    $(id).oninput = markAttendanceEditorDirty;
+  });
+  $('attRestDay').onchange = () => {
+    markAttendanceEditorDirty();
+    syncAttendanceRestDayState();
+  };
   $('shiftsTable').onclick = e => {
     if (!canManageShifts()) return;
     const cell = e.target.closest('td.shift-cell');
@@ -2881,6 +2986,10 @@ async function tab(id, b) {
   if (id === 'myShifts' && canManageShifts()) {
     notify('Questa vista è disponibile per i dipendenti.', 'info');
     return;
+  }
+  if (previousTab === 'attendance' && id !== 'attendance') {
+    const saved = await persistAttendanceEditorIfDirty();
+    if (!saved) return;
   }
   if (previousTab === 'chat' && id !== 'chat') stopChatListener();
   if (['turni', 'myShifts'].includes(previousTab) && !['turni', 'myShifts'].includes(id)) stopShiftListeners();
@@ -3099,29 +3208,20 @@ async function saveDay() {
 }
 
 // AUTO-POPULATE HOURS IN NUOVA GIORNATA FROM ATTENDANCE DATA
-async function populateHoursFromAttendance(date) {
+async function populateHoursFromAttendance(date, options = {}) {
+  const { forceRefresh = false, silent = false } = options;
   if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
   try {
-    // Try cache first (new format)
-    let dayAttendance = null;
-    const cached = attendanceWeekEntries?.[date];
-    if (cached && typeof cached === 'object' && Object.keys(cached).length > 0) {
-      dayAttendance = cached;
-    } else {
-      // Try new RTDB path attendance/{weekStart}/{date}
-      const weekStart = getWeekStartISO(date);
-      const newSnap = await rtdbGet(rtdbRef(rtdb, `attendance/${weekStart}/${date}`));
-      if (newSnap.exists()) {
-        dayAttendance = newSnap.val();
-      } else {
-        // Fallback to old path attendance/{date}
-        const oldSnap = await rtdbGet(rtdbRef(rtdb, `attendance/${date}`));
-        if (oldSnap.exists()) dayAttendance = oldSnap.val();
-      }
-    }
-    if (!dayAttendance || typeof dayAttendance !== 'object') return;
+    const dayAttendance = await readAttendanceDayEntries(date, { forceRefresh });
     const rows = document.querySelectorAll('#hours tr[data-emp-id]');
-    let anyFilled = false;
+    rows.forEach(row => {
+      const input = row.querySelector('.hour');
+      if (input) input.value = '0';
+    });
+    if (!dayAttendance || typeof dayAttendance !== 'object') {
+      updateHourCalculations();
+      return;
+    }
     rows.forEach(row => {
       const uid = row.getAttribute('data-emp-id');
       if (!uid) return;
@@ -3138,12 +3238,12 @@ async function populateHoursFromAttendance(date) {
       }
       if (workedHours > 0) {
         input.value = workedHours;
-        anyFilled = true;
       }
     });
-    if (anyFilled) updateHourCalculations();
+    updateHourCalculations();
   } catch (e) {
     console.error('[NuovaGiornata] Errore caricamento ore da attendance:', e);
+    if (!silent) notify(getFriendlyRtdbMessage(e, 'Impossibile leggere le ore da entrata e uscita.'), 'error');
   }
 }
 
