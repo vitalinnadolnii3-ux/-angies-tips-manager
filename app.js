@@ -20,7 +20,7 @@ const functions = getFunctions(fbApp);
 const rtdb = getDatabase(fbApp);
 
 const NAMES = ['Vitalin', 'Alex', 'Diego', 'Silvano', 'Giuseppe', 'Davide', 'Anna', 'Sunkar', 'Lisa', 'Zara', 'Extra'];
-let state = { employees: NAMES, kitchenPercent: 20, history: [] };
+let state = { employees: NAMES, kitchenPercent: 20, history: [], attendance: {} };
 let unsub = null;
 let currentUser = '';
 let currentUserUid = '';
@@ -1078,7 +1078,7 @@ async function logout() {
   shiftsData = [];
   usersData = [];
   attendanceWeekOffset = 0;
-  attendanceWeekEntries = {};
+  resetAttendanceLocalEntries();
   contractHoursData = {};
   $('who').textContent = 'Online';
   stopChatListener();
@@ -2091,6 +2091,32 @@ function attendanceV2Path(weekStart, date = '', uid = '') {
   return `attendance/${weekStart}`;
 }
 
+function resetAttendanceLocalEntries() {
+  resetAttendanceLocalEntries();
+  state.attendance = {};
+}
+
+function setAttendanceLocalEntry(date, uid, record) {
+  if (!date || !uid || !record) return;
+  if (!attendanceWeekEntries[date] || typeof attendanceWeekEntries[date] !== 'object') attendanceWeekEntries[date] = {};
+  if (!state.attendance || typeof state.attendance !== 'object') state.attendance = {};
+  if (!state.attendance[date] || typeof state.attendance[date] !== 'object') state.attendance[date] = {};
+  attendanceWeekEntries[date][uid] = record;
+  state.attendance[date][uid] = record;
+}
+
+function deleteAttendanceLocalEntry(date, uid) {
+  if (!date || !uid) return;
+  if (attendanceWeekEntries?.[date]) {
+    delete attendanceWeekEntries[date][uid];
+    if (!Object.keys(attendanceWeekEntries[date]).length) delete attendanceWeekEntries[date];
+  }
+  if (state.attendance?.[date]) {
+    delete state.attendance[date][uid];
+    if (!Object.keys(state.attendance[date]).length) delete state.attendance[date];
+  }
+}
+
 function getAttendanceEmployees() {
   if (!currentUserUid) return [];
   if (canViewAllAttendance()) return getShiftEmployees();
@@ -2163,11 +2189,13 @@ function markAttendanceEditorDirty() {
 }
 
 function applyAttendanceWeekEntries(weekStart, weekData) {
-  attendanceWeekEntries = {};
+  resetAttendanceLocalEntries();
   console.log('[Attendance] APPLY weekStart:', weekStart, '| date trovate:', Object.keys(weekData || {}));
   Object.entries(weekData || {}).forEach(([date, dateData]) => {
     if (dateData && typeof dateData === 'object') {
-      attendanceWeekEntries[date] = dateData;
+      Object.entries(dateData).forEach(([uid, record]) => {
+        if (record && typeof record === 'object') setAttendanceLocalEntry(date, uid, record);
+      });
       console.log('[Attendance] APPLY', date, '→ uid trovati:', Object.keys(dateData));
     }
   });
@@ -2220,6 +2248,8 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
     const dayData = daySnap.val() || {};
     if (attendanceLoadedWeekStart === weekStart) {
       attendanceWeekEntries[date] = dayData;
+      if (!state.attendance || typeof state.attendance !== 'object') state.attendance = {};
+      state.attendance[date] = dayData;
     }
     return dayData;
   }
@@ -2461,7 +2491,7 @@ function renderAttendance() {
 async function attachAttendanceListeners() {
   stopAttendanceV2Listener();
   if (!currentUserUid) {
-    attendanceWeekEntries = {};
+    resetAttendanceLocalEntries();
     attendanceLoadedWeekStart = '';
     contractHoursData = {};
     setAttendanceStatus('');
@@ -2470,7 +2500,7 @@ async function attachAttendanceListeners() {
   }
   const weekDates = getCurrentAttendanceWeekDates();
   const weekStart = weekDates[0].date;
-  attendanceWeekEntries = {};
+  resetAttendanceLocalEntries();
   setAttendanceStatus('Caricamento entrate e uscite...', 'info');
   renderAttendance();
   // Load contract hours (non-blocking)
@@ -2516,6 +2546,7 @@ async function saveAttendanceEntry(options = {}) {
   if (!uid || !date) { setAttendanceStatus('Nessuna cella selezionata.', 'error'); return false; }
   if (!currentUserUid) { setAttendanceStatus('Sessione non valida. Effettua di nuovo il login.', 'error'); return false; }
   const weekStart = getWeekStartISO(date);
+  if (!weekStart) { setAttendanceStatus('Settimana non valida per questa data.', 'error'); return false; }
   const isRestDay = $('attRestDay') ? $('attRestDay').checked : false;
   const entryTime1 = isRestDay ? '' : String($('attEntry1')?.value || '').trim();
   const exitTime1 = isRestDay ? '' : String($('attExit1')?.value || '').trim();
@@ -2527,7 +2558,7 @@ async function saveAttendanceEntry(options = {}) {
   const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
   const workedMinutes = calcEntryWorkedMinutes(entryForCalc); // returns 0 when isRestDay=true
   const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
-  const payload = {
+  const record = {
     uid,
     employeeName,
     date,
@@ -2544,27 +2575,30 @@ async function saveAttendanceEntry(options = {}) {
     updatedBy: currentUserUid
   };
   const savePath = attendanceV2Path(weekStart, date, uid);
+  console.log('SAVE ATTENDANCE CLICKED');
+  console.log('uid:', uid);
+  console.log('date:', date);
+  console.log('weekStart:', weekStart);
+  console.log('RTDB path:', `attendance/${weekStart}/${date}/${uid}`);
+  console.log('record:', record);
   console.log('[Attendance] SAVE uid:', uid, '| employeeName:', employeeName, '| date:', date, '| weekStart:', weekStart);
   console.log('[Attendance] SAVE path RTDB:', savePath);
   console.log('[Attendance] SAVE workedHours:', workedHours, '| workedMinutes:', workedMinutes, '| isRestDay:', isRestDay);
-  console.log('[Attendance] SAVE dati salvati:', JSON.stringify(payload));
+  console.log('[Attendance] SAVE dati salvati:', JSON.stringify(record));
   try {
-    await rtdbSet(rtdbRef(rtdb, savePath), payload);
+    await rtdbSet(rtdbRef(rtdb, savePath), record);
     console.log('[Attendance] SAVE Firebase OK per path:', savePath);
-    // Aggiorna subito lo stato locale e ridisegna la tabella (ottimistic update:
-    // mostra i nuovi dati immediatamente senza aspettare il reload asincrono da Firebase)
-    if (!attendanceWeekEntries[date]) attendanceWeekEntries[date] = {};
-    attendanceWeekEntries[date][uid] = payload;
-    renderAttendanceTable();
+    setAttendanceLocalEntry(date, uid, record);
     void writeLog(`attendance_save:${date}:${uid}`);
     closeAttendanceEditor();
-    // Ricarica da Firebase e aggiorna tabella + Nuova giornata se aperta
+    renderAttendanceTable();
     await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
     if (silentSuccess) setAttendanceStatus('');
     return true;
   } catch (e) {
     console.error('[Attendance] ERRORE salvataggio su path', savePath, ':', e);
     setAttendanceStatus(getFriendlyRtdbMessage(e, 'Errore salvataggio entrata/uscita.'), 'error');
+    alert(getFriendlyRtdbMessage(e, 'Errore salvataggio entrata/uscita.'));
     return false;
   }
 }
@@ -2578,7 +2612,7 @@ async function deleteAttendanceEntry() {
   const weekStart = getWeekStartISO(date);
   try {
     await rtdbSet(rtdbRef(rtdb, attendanceV2Path(weekStart, date, uid)), null);
-    if (attendanceWeekEntries[date]) delete attendanceWeekEntries[date][uid];
+    deleteAttendanceLocalEntry(date, uid);
     void writeLog(`attendance_delete:${date}:${uid}`);
     closeAttendanceEditor();
     await reloadAttendanceAfterMutation(date, 'Entrata/uscita eliminata e ricaricata.');
@@ -2978,7 +3012,9 @@ function init() {
     closeAttendanceEditor();
     await attachAttendanceListeners();
   };
-  $('attSaveEntryBtn').onclick = saveAttendanceEntry;
+  $('attSaveEntryBtn').onclick = async () => {
+    await saveAttendanceEntry();
+  };
   $('attDeleteEntryBtn').onclick = deleteAttendanceEntry;
   $('attCancelEntryBtn').onclick = closeAttendanceEditor;
   ['attEntry1', 'attExit1', 'attEntry2', 'attExit2', 'attNotes'].forEach(id => {
@@ -3652,7 +3688,7 @@ window.addEventListener('load', async () => {
           employeesData = [];
           shiftsData = [];
           attendanceWeekOffset = 0;
-          attendanceWeekEntries = {};
+          resetAttendanceLocalEntries();
           contractHoursData = {};
           stopShiftListeners();
           stopChatListener();
