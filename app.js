@@ -308,7 +308,9 @@ function validateDayPayload(d) {
   if (d.cash > MAX_TIP_AMOUNT || d.card > MAX_TIP_AMOUNT) throw new Error('Valore mance troppo alto.');
   if (d.total <= 0) throw new Error('Inserisci Cash o Carta.');
   // Accept either new hoursByEmployee map or legacy hours array
-  const hasHoursByEmployee = d.hoursByEmployee && typeof d.hoursByEmployee === 'object' && Object.keys(d.hoursByEmployee).length > 0;
+  const hasHoursByEmployee = d.hoursByEmployee !== null && d.hoursByEmployee !== undefined &&
+    typeof d.hoursByEmployee === 'object' && !Array.isArray(d.hoursByEmployee) &&
+    Object.keys(d.hoursByEmployee).length > 0;
   const hasHoursArray = Array.isArray(d.hours) && d.hours.some(h => h > 0);
   if (!hasHoursByEmployee && !hasHoursArray) throw new Error('Inserisci almeno un\'ora.');
   if (hasHoursByEmployee) {
@@ -378,7 +380,9 @@ function resolveUsername(name) {
 // Returns an hours array aligned to state.employees for backward-compat rendering.
 // Supports both the new hoursByEmployee map (keyed by uid) and the legacy hours[] array.
 function getHoursArrayFromDay(day) {
-  if (day.hoursByEmployee && typeof day.hoursByEmployee === 'object' && Object.keys(day.hoursByEmployee).length > 0) {
+  if (day.hoursByEmployee !== null && day.hoursByEmployee !== undefined &&
+      typeof day.hoursByEmployee === 'object' && !Array.isArray(day.hoursByEmployee) &&
+      Object.keys(day.hoursByEmployee).length > 0) {
     return state.employees.map(empName => {
       const entry = Object.values(day.hoursByEmployee).find(e =>
         normalizeName(String(e.name || '')).toLowerCase() === empName.toLowerCase()
@@ -3155,7 +3159,8 @@ function shareWhatsApp() {
   let pricePerHourCash = d.salaCash / d.totalHours;
   let pricePerHourCard = d.salaCard / d.totalHours;
   let employeesWorked;
-  if (d.hoursByEmployee && Object.keys(d.hoursByEmployee).length > 0) {
+  if (d.hoursByEmployee !== null && d.hoursByEmployee !== undefined &&
+      typeof d.hoursByEmployee === 'object' && !Array.isArray(d.hoursByEmployee)) {
     // New format
     employeesWorked = Object.values(d.hoursByEmployee).filter(e => e.hours > 0);
   } else {
