@@ -2540,16 +2540,42 @@ async function loadAttendanceData(forceRefresh = false) {
 
 async function saveAttendanceEntry(options = {}) {
   const { silentSuccess = false } = options;
-  if (!canManageAttendance()) { setAttendanceStatus('Accesso consentito solo ad Admin/Manager/Responsabile.', 'error'); return false; }
+  if (!canManageAttendance()) {
+    const msg = 'Accesso consentito solo ad Admin/Manager/Responsabile.';
+    setAttendanceStatus(msg, 'error');
+    alert(msg);
+    return false;
+  }
   const uid = editingAttendanceUid;
   const date = editingAttendanceDate;
-  if (!uid || !date) { setAttendanceStatus('Nessuna cella selezionata.', 'error'); return false; }
-  if (!currentUserUid) { setAttendanceStatus('Sessione non valida. Effettua di nuovo il login.', 'error'); return false; }
+  if (!uid || !date) {
+    const msg = "Nessuna cella selezionata. Tocca una cella della tabella per aprire l'editor.";
+    setAttendanceStatus(msg, 'error');
+    alert(msg);
+    return false;
+  }
+  if (!currentUserUid) {
+    const msg = 'Sessione non valida. Effettua di nuovo il login.';
+    setAttendanceStatus(msg, 'error');
+    alert(msg);
+    return false;
+  }
   const weekStart = getWeekStartISO(date);
-  if (!weekStart) { setAttendanceStatus('Settimana non valida per questa data.', 'error'); return false; }
+  if (!weekStart) {
+    const msg = 'Settimana non valida per questa data.';
+    setAttendanceStatus(msg, 'error');
+    alert(msg);
+    return false;
+  }
   const isRestDay = $('attRestDay') ? $('attRestDay').checked : false;
   const entryTime1 = isRestDay ? '' : String($('attEntry1')?.value || '').trim();
   const exitTime1 = isRestDay ? '' : String($('attExit1')?.value || '').trim();
+  if (!isRestDay && !entryTime1) {
+    const msg = "Inserisci almeno l'orario di entrata, oppure segna la giornata come riposo.";
+    setAttendanceStatus(msg, 'error');
+    alert(msg);
+    return false;
+  }
   const entryTime2 = isRestDay ? '' : String($('attEntry2')?.value || '').trim();
   const exitTime2 = isRestDay ? '' : String($('attExit2')?.value || '').trim();
   const notes = String($('attNotes')?.value || '').trim();
