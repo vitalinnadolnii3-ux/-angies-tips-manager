@@ -306,9 +306,17 @@ function validateDayPayload(d) {
   if (!validateISODate(d.date)) throw new Error('Inserisci una data valida.');
   if (d.cash < 0 || d.card < 0) throw new Error('Cash e Carta non possono essere negativi.');
   if (d.cash > MAX_TIP_AMOUNT || d.card > MAX_TIP_AMOUNT) throw new Error('Valore mance troppo alto.');
-  if (!Array.isArray(d.hours) || !d.hours.length) throw new Error('Inserisci almeno un\'ora.');
-  if (d.hours.some(h => !Number.isFinite(h) || h < 0 || h > 24)) throw new Error('Le ore devono essere comprese tra 0 e 24.');
   if (d.total <= 0) throw new Error('Inserisci Cash o Carta.');
+  // Accept either new hoursByEmployee map or legacy hours array
+  const hasHoursByEmployee = d.hoursByEmployee && typeof d.hoursByEmployee === 'object' && Object.keys(d.hoursByEmployee).length > 0;
+  const hasHoursArray = Array.isArray(d.hours) && d.hours.some(h => h > 0);
+  if (!hasHoursByEmployee && !hasHoursArray) throw new Error('Inserisci almeno un\'ora.');
+  if (hasHoursByEmployee) {
+    const invalid = Object.values(d.hoursByEmployee).some(e => !Number.isFinite(e.hours) || e.hours < 0 || e.hours > 24);
+    if (invalid) throw new Error('Le ore devono essere comprese tra 0 e 24.');
+  } else {
+    if (d.hours.some(h => !Number.isFinite(h) || h < 0 || h > 24)) throw new Error('Le ore devono essere comprese tra 0 e 24.');
+  }
   if (d.totalHours <= 0) throw new Error('Inserisci almeno un\'ora.');
 }
 
@@ -365,6 +373,20 @@ function resolveUsername(name) {
   if (!/[A-Za-zÀ-ÖØ-öø-ÿ]/.test(cleaned)) return '';
   if (!/^[A-Za-zÀ-ÖØ-öø-ÿ0-9 '.-]{2,40}$/.test(cleaned)) return '';
   return cleaned;
+}
+
+// Returns an hours array aligned to state.employees for backward-compat rendering.
+// Supports both the new hoursByEmployee map (keyed by uid) and the legacy hours[] array.
+function getHoursArrayFromDay(day) {
+  if (day.hoursByEmployee && typeof day.hoursByEmployee === 'object' && Object.keys(day.hoursByEmployee).length > 0) {
+    return state.employees.map(empName => {
+      const entry = Object.values(day.hoursByEmployee).find(e =>
+        normalizeName(String(e.name || '')).toLowerCase() === empName.toLowerCase()
+      );
+      return entry ? (entry.hours || 0) : 0;
+    });
+  }
+  return day.hours || [];
 }
 
 function normalizeRole(role) {
@@ -759,25 +781,20 @@ function classifyShift(shift) {
 }
 
 function getShiftEmployees() {
-  // Use SHIFT_PRESET_EMPLOYEE_ORDER as the canonical base employee list for all sections
-  const canonicalEmployees = SHIFT_PRESET_EMPLOYEE_ORDER.map(name => {
-    const matchingEmployee = employeesData.find(emp =>
-      emp.enabled !== false &&
-      normalizeName(emp.name).toLowerCase() === name.toLowerCase()
-    );
-    return { id: matchingEmployee?.id || name, name };
-  });
-  // Add any Firestore employees not already in the canonical list
+  // Use only Firestore employees as the canonical source (deduped by uid)
   if (Array.isArray(employeesData) && employeesData.length > 0) {
-    const presetNameSet = new Set(SHIFT_PRESET_EMPLOYEE_ORDER.map(n => n.toLowerCase()));
-    employeesData
-      .filter(emp => emp.enabled !== false && !presetNameSet.has(normalizeName(emp.name).toLowerCase()))
+    const seen = new Set();
+    const employees = employeesData
+      .filter(emp => emp.enabled !== false)
+      .filter(emp => {
+        if (!emp.id || seen.has(emp.id)) return false;
+        seen.add(emp.id);
+        return true;
+      })
       .sort((a, b) => normalizeName(a.name || '').localeCompare(normalizeName(b.name || ''), 'it', { sensitivity: 'base' }))
-      .forEach(emp => {
-        canonicalEmployees.push({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id });
-      });
+      .map(emp => ({ id: emp.id, name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id }));
+    if (employees.length) return employees;
   }
-  if (canonicalEmployees.length) return canonicalEmployees;
   // Fallback to current user if nothing else available
   return currentUserUid ? [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUser }] : [];
 }
@@ -797,15 +814,19 @@ function sortUsersList(list = []) {
 }
 
 function syncStateEmployeesFromEmployeesData() {
-  // Always use SHIFT_PRESET_EMPLOYEE_ORDER as the canonical base for the unified employee list
-  const presetNames = SHIFT_PRESET_EMPLOYEE_ORDER.slice();
-  const presetNameSet = new Set(presetNames.map(n => n.toLowerCase()));
-  // Append any extra active Firestore employees not already in the preset list
-  const extraNames = employeesData
-    .filter(emp => emp.enabled !== false && emp.active !== false && !presetNameSet.has(normalizeName(emp.name).toLowerCase()))
+  // Use only Firestore employees as the canonical source (deduped by uid)
+  const seen = new Set();
+  state.employees = employeesData
+    .filter(emp => emp.enabled !== false && emp.active !== false)
+    .filter(emp => {
+      const key = emp.id || normalizeEmail(emp.email);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
     .map(emp => normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id)
     .filter(Boolean);
-  state.employees = [...presetNames, ...extraNames];
+  console.log('[Dipendenti] Lista dipendenti aggiornata da Firestore:', state.employees);
 }
 
 function setEmployeesCache(list = []) {
@@ -1151,16 +1172,20 @@ async function loadUsersForAdmin() {
     return;
   }
   try {
-    // Prefer Realtime Database as primary RBAC source
+    // Primary source: Firestore /users/ (canonical RBAC source)
+    const snap = await getDocs(usersCollection());
+    if (!snap.empty) {
+      console.log('[Users] Caricamento da Firestore /users/ riuscito.');
+      setUsersCache(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+      return;
+    }
+    // Fallback: Realtime Database (legacy, used only if Firestore /users/ è vuota)
+    console.log('[Users] Firestore /users/ vuota — provo RTDB come fallback...');
     const rtdbSnap = await rtdbGet(rtdbUsers());
     if (rtdbSnap.exists()) {
       const rtdbVal = rtdbSnap.val();
       setUsersCache(Object.entries(rtdbVal).map(([id, data]) => ({ id, ...data })));
-      return;
     }
-    // Fall back to Firestore /users/ collection
-    const snap = await getDocs(usersCollection());
-    setUsersCache(snap.docs.map(d => ({ id: d.id, ...d.data() })));
   } catch (e) {
     console.error('Errore caricamento utenti:', e);
     throw e;
@@ -1253,12 +1278,7 @@ function renderEmployeesTable() {
   }
   let html = '<tr><th>Nome</th><th>Email</th><th>Telefono</th><th>Posizione</th><th>Ruolo App</th><th>Stato</th><th>Azioni</th></tr>';
 
-  // Build combined list: Firestore employees + preset employees not yet registered
-  const firestoreNameSet = new Set(employeesData.map(emp => normalizeName(emp.name).toLowerCase()));
-  const presetOnlyEmployees = SHIFT_PRESET_EMPLOYEE_ORDER
-    .filter(name => !firestoreNameSet.has(name.toLowerCase()))
-    .map(name => ({ _isPreset: true, name }));
-  const allEmployees = [...employeesData, ...presetOnlyEmployees];
+  const allEmployees = employeesData;
 
   if (!allEmployees.length) {
     html += '<tr><td colspan="7">Nessun dipendente registrato.</td></tr>';
@@ -1266,18 +1286,6 @@ function renderEmployeesTable() {
     return;
   }
   allEmployees.forEach(emp => {
-    if (emp._isPreset) {
-      html += `<tr>
-        <td>${esc(emp.name)}</td>
-        <td>-</td>
-        <td>-</td>
-        <td>-</td>
-        <td>-</td>
-        <td><span class="status-badge status-disabled">Non registrato</span></td>
-        <td class="table-actions"><em>Crea account per gestire</em></td>
-      </tr>`;
-      return;
-    }
     const active = emp.active !== false && emp.enabled !== false;
     const statusClass = active ? 'status-enabled' : 'status-disabled';
     const statusText = active ? 'Attivo' : 'Disattivato';
@@ -1479,13 +1487,15 @@ async function createEmployee() {
     });
     uid = fnResult.data?.uid ? String(fnResult.data.uid) : '';
   } catch (e) {
-    if (isEmailAlreadyRegisteredError(e)) {
+  if (isEmailAlreadyRegisteredError(e)) {
       notify(getDuplicateEmployeeEmailMessage(data.normalizedEmail), 'error');
       return;
     }
     if (isMissingAdminFunctionError(e)) {
-      console.warn('Callable createEmployeeAuthUser non disponibile, uso fallback client-side.', e);
-      uid = '';
+      // Do NOT use client-side secondary session fallback — it can cause session/login issues
+      console.error('[Dipendenti] Cloud Function createEmployeeAuthUser non disponibile.', e);
+      notify('Creazione account non disponibile: la Cloud Function "createEmployeeAuthUser" non è configurata. Contatta l\'amministratore del sistema.', 'error');
+      return;
     } else {
       console.error('Errore creazione account Auth tramite Cloud Function:', e);
       notify('Errore creazione account: ' + getErrorDetails(e), 'error');
@@ -1494,17 +1504,8 @@ async function createEmployee() {
   }
 
   if (!uid) {
-    try {
-      uid = await createAuthUserWithSecondarySession(data.normalizedEmail, temporaryPassword);
-    } catch (e) {
-      console.error('Errore creazione utente auth:', e);
-      if (isEmailAlreadyRegisteredError(e)) {
-        notify(getDuplicateEmployeeEmailMessage(data.normalizedEmail), 'error');
-        return;
-      }
-      notify('Errore creazione utente: ' + getErrorDetails(e), 'error');
-      return;
-    }
+    notify('Impossibile creare l\'account: uid non ottenuto. Verifica che la Cloud Function sia configurata.', 'error');
+    return;
   }
 
   try {
@@ -1932,25 +1933,7 @@ async function loadCurrentUserProfile(user) {
     return true;
   }
 
-  const applyRtdbProfile = async (rtdbProfile) => {
-    const active = rtdbProfile.active !== false;
-    if (!active) {
-      console.warn('[Profilo] Account disattivato (RTDB) per uid:', currentUserUid);
-      setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
-      await signOut(auth);
-      return false;
-    }
-    currentUserName = normalizeName(rtdbProfile.name) || currentUserName;
-    currentUserRole = String(rtdbProfile.role || '').trim();
-    if (!currentUserRole) {
-      console.warn('[Profilo] Ruolo mancante nel profilo RTDB per uid:', currentUserUid);
-      setStatus('loginStatus', 'Avviso: ruolo non configurato. Contatta un amministratore.', 'info');
-      currentUserRole = 'waiter';
-    }
-    console.log('[Profilo] Login da RTDB riuscito. Ruolo:', currentUserRole);
-    return true;
-  };
-
+  // Apply profile from Firestore /users/ (primary RBAC source)
   const applyUsersProfile = async (profile) => {
     const active = profile.active !== false;
     if (!active) {
@@ -1959,16 +1942,12 @@ async function loadCurrentUserProfile(user) {
       return false;
     }
     currentUserName = normalizeName(profile.name) || currentUserName;
-    currentUserRole = profile.role || 'waiter';
-    writeUserToRTDB(user.uid, profile).then(() => {
-      console.log('[Profilo] Migrazione a RTDB riuscita.');
-    }).catch(e => {
-      console.warn('[Profilo] Migrazione RTDB non riuscita (non bloccante):', getErrorDetails(e));
-    });
+    currentUserRole = normalizeStoredRole(profile.role || profile.appRole || 'waiter');
     console.log('[Profilo] Login da Firestore /users/ riuscito. Ruolo:', currentUserRole);
     return true;
   };
 
+  // Apply profile from Firestore /employees/ (secondary source; syncs to /users/ in background)
   const applyEmployeesProfile = async (profile) => {
     const enabled = profile.enabled !== false && profile.active !== false;
     if (!enabled) {
@@ -1978,16 +1957,9 @@ async function loadCurrentUserProfile(user) {
     }
     currentUserName = normalizeName(profile.name) || currentUserName;
     currentUserRole = normalizeStoredRole(profile.appRole || profile.role || 'waiter');
-    const resolvedRole = normalizeStoredRole(currentUserRole);
-    const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
-    writeUserToRTDB(user.uid, {
-      name: currentUserName,
-      email: currentUser,
-      role: resolvedRole,
-      active: enabled
-    }).catch(rtErr => {
-      console.warn('[Profilo] Creazione users/{uid} su RTDB non riuscita (non bloccante):', getErrorDetails(rtErr));
-    });
+    const resolvedRole = currentUserRole;
+    const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || resolvedRole) || 'Waiter';
+    // Sync to Firestore /users/ in background so future logins use the primary source
     setDoc(userDoc(user.uid), {
       name: currentUserName,
       surname: profile.surname || '',
@@ -2000,86 +1972,69 @@ async function loadCurrentUserProfile(user) {
       active: enabled,
       updatedAt: serverTimestamp()
     }, { merge: true }).catch(fsErr => {
-      console.warn('[Profilo] Creazione profilo Firestore /users non riuscita (non bloccante):', getErrorDetails(fsErr));
+      console.warn('[Profilo] Sincronizzazione /users/ non riuscita (non bloccante):', getErrorDetails(fsErr));
     });
-    console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', currentUserRole);
+    console.log('[Profilo] Login da Firestore /employees/ riuscito. Ruolo:', resolvedRole);
     return true;
   };
 
-  console.log('[Profilo] Avvio lettura parallela con race da RTDB, Firestore /users/, Firestore /employees/…');
-  const profileReads = [
-    {
-      key: 'rtdb',
-      label: 'RTDB users/' + currentUserUid,
-      promise: withRetry(() => rtdbGet(rtdbUser(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'RTDB users/' + currentUserUid)
-    },
-    {
-      key: 'users',
-      label: 'Firestore /users/' + currentUserUid,
-      promise: withRetry(() => getDoc(userDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /users/' + currentUserUid)
-    },
-    {
-      key: 'employees',
-      label: 'Firestore /employees/' + currentUserUid,
-      promise: withRetry(() => getDoc(employeeDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /employees/' + currentUserUid)
+  // Apply profile from RTDB (legacy fallback only)
+  const applyRtdbProfile = async (rtdbProfile) => {
+    const active = rtdbProfile.active !== false;
+    if (!active) {
+      console.warn('[Profilo] Account disattivato (RTDB) per uid:', currentUserUid);
+      setStatus('loginStatus', 'Account disattivato. Contatta un amministratore.', 'error');
+      await signOut(auth);
+      return false;
     }
-  ];
+    currentUserName = normalizeName(rtdbProfile.name) || currentUserName;
+    currentUserRole = normalizeStoredRole(String(rtdbProfile.role || '').trim() || 'waiter');
+    console.warn('[Profilo] Login da RTDB (fallback legacy). Ruolo:', currentUserRole, '— aggiorna profilo in Firestore /users/');
+    return true;
+  };
 
-  const wrappedReads = profileReads.map((read, index) => read.promise
-    .then(value => ({ index, status: 'fulfilled', value }))
-    .catch(reason => ({ index, status: 'rejected', reason }))
-  );
-  const pendingIndexes = new Set(wrappedReads.map((_, index) => index));
+  // Read all three sources in parallel for speed, then apply in priority order
+  console.log('[Profilo] Lettura parallela da Firestore /users/, /employees/ e RTDB...');
+  const [usersResult, employeesResult, rtdbResult] = await Promise.allSettled([
+    withRetry(() => getDoc(userDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /users/' + currentUserUid),
+    withRetry(() => getDoc(employeeDoc(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'Firestore /employees/' + currentUserUid),
+    withRetry(() => rtdbGet(rtdbUser(user.uid)), PROFILE_LOAD_MAX_ATTEMPTS, 'RTDB users/' + currentUserUid)
+  ]);
 
-  while (pendingIndexes.size) {
-    const result = await Promise.race(Array.from(pendingIndexes).map(index => wrappedReads[index]));
-    pendingIndexes.delete(result.index);
-    const read = profileReads[result.index];
-
-    if (result.status === 'rejected') {
-      if (read.key === 'rtdb') {
-        console.warn('[Profilo] Lettura RTDB non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
-        setStatus('loginStatus', 'Avviso RTDB: ' + getErrorDetails(result.reason) + ' — uso profilo alternativo.', 'info');
-      } else if (read.key === 'users') {
-        console.warn('[Profilo] Lettura Firestore /users/ non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
-      } else {
-        console.warn('[Profilo] Lettura Firestore /employees/ non riuscita (non bloccante):', result.reason?.code, result.reason?.message);
-      }
-      continue;
+  // Priority 1: Firestore /users/ (canonical RBAC source)
+  if (usersResult.status === 'fulfilled') {
+    if (usersResult.value.exists()) {
+      console.log('[Profilo] Profilo Firestore /users/ trovato — fonte principale.');
+      return await applyUsersProfile(usersResult.value.data());
     }
-
-    if (read.key === 'rtdb') {
-      if (!result.value.exists()) {
-        console.log('[Profilo] Profilo RTDB non trovato — continuo race con Firestore.');
-        continue;
-      }
-      const rtdbProfile = result.value.val();
-      console.log('[Profilo] Profilo RTDB trovato:', rtdbProfile);
-      return await applyRtdbProfile(rtdbProfile);
-    }
-
-    if (read.key === 'users') {
-      if (!result.value.exists()) {
-        console.log('[Profilo] Profilo Firestore /users/ non trovato — continuo race.');
-        continue;
-      }
-      const profile = result.value.data();
-      console.log('[Profilo] Profilo Firestore /users/ trovato:', profile);
-      return await applyUsersProfile(profile);
-    }
-
-    if (read.key === 'employees') {
-      if (!result.value.exists()) {
-        console.log('[Profilo] Profilo Firestore /employees/ non trovato — continuo race.');
-        continue;
-      }
-      const employeeProfile = result.value.data();
-      console.log('[Profilo] Profilo Firestore /employees/ trovato:', employeeProfile);
-      return await applyEmployeesProfile(employeeProfile);
-    }
+    console.log('[Profilo] Profilo Firestore /users/ non trovato — provo /employees/.');
+  } else {
+    console.warn('[Profilo] Lettura Firestore /users/ non riuscita:', usersResult.reason?.code, usersResult.reason?.message);
   }
 
-  // 4. Access denied: only pre-registered users can enter
+  // Priority 2: Firestore /employees/
+  if (employeesResult.status === 'fulfilled') {
+    if (employeesResult.value.exists()) {
+      console.log('[Profilo] Profilo Firestore /employees/ trovato — fonte secondaria.');
+      return await applyEmployeesProfile(employeesResult.value.data());
+    }
+    console.log('[Profilo] Profilo Firestore /employees/ non trovato — provo RTDB come ultimo fallback.');
+  } else {
+    console.warn('[Profilo] Lettura Firestore /employees/ non riuscita:', employeesResult.reason?.code, employeesResult.reason?.message);
+  }
+
+  // Priority 3: RTDB (legacy fallback only)
+  if (rtdbResult.status === 'fulfilled') {
+    if (rtdbResult.value.exists()) {
+      console.log('[Profilo] Profilo RTDB trovato — usato come fallback legacy.');
+      return await applyRtdbProfile(rtdbResult.value.val());
+    }
+    console.log('[Profilo] Profilo RTDB non trovato.');
+  } else {
+    console.warn('[Profilo] Lettura RTDB non riuscita:', rtdbResult.reason?.code, rtdbResult.reason?.message);
+  }
+
+  // No profile found in any source
   console.warn('[Profilo] Nessun profilo trovato per uid/email:', user.uid, currentUser);
   setStatus('loginStatus', 'Accesso negato: email non autorizzata. Contatta un amministratore.', 'error');
   await signOut(auth);
@@ -2087,8 +2042,9 @@ async function loadCurrentUserProfile(user) {
 }
 
 function shiftMapByKey() {
+  // Use only Firestore shifts — no preset merging
   const map = new Map();
-  mergePresetWeekShifts(shiftsData).forEach(shift => {
+  shiftsData.forEach(shift => {
     const key = `${shift.uid}__${shift.date}`;
     map.set(key, shift);
   });
@@ -2388,7 +2344,7 @@ async function loadAttendanceData(forceRefresh = false) {
       }
     });
     attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
-    attendanceShiftData = mergePresetWeekShifts([], weekDates);
+    attendanceShiftData = []; // Will be populated from Firestore shifts below
     attendanceLoadedWeekStart = weekStart;
     setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
     renderAttendance();
@@ -2404,12 +2360,12 @@ async function loadAttendanceData(forceRefresh = false) {
       .then(shiftSnapshot => {
         // Ignora risultati obsoleti se l'utente ha cambiato settimana
         if (attendanceLoadedWeekStart !== capturedWeekStart) return;
-        const fetchedShifts = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-        attendanceShiftData = mergePresetWeekShifts(fetchedShifts, weekDates);
+        // Use only Firestore shifts — no preset merging
+        attendanceShiftData = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
         renderAttendance();
       })
       .catch(e => {
-        console.warn('[Attendance] Caricamento turni Firestore non riuscito, uso turni preset:', e);
+        console.warn('[Attendance] Caricamento turni Firestore non riuscito:', e);
       });
   } catch (e) {
     console.error('Errore caricamento entrate e uscite:', e);
@@ -2468,7 +2424,8 @@ async function saveAttendance() {
 
 function maybeShowTodayShiftPopup() {
   if (todayShiftPopupShown || canManageShifts() || !currentUserUid) return;
-  const shift = mergePresetWeekShifts(shiftsData).find(s => s.uid === currentUserUid && s.date === today());
+  // Use only Firestore shifts (no preset merging)
+  const shift = shiftsData.find(s => s.uid === currentUserUid && s.date === today());
   if (!shift) return;
   todayShiftPopupShown = true;
   const text = getShiftDisplayText(shift);
@@ -2504,12 +2461,7 @@ function renderShiftTable(tableId, allowEdit) {
     });
     html += '</tr>';
   });
-  const presetTotals = getPresetWeekTotals(weekDates);
-  if (presetTotals.length === totals.length) {
-    presetTotals.forEach((dayTotal, index) => {
-      totals[index] = dayTotal;
-    });
-  }
+  // Use actual computed totals from Firestore shift data
   html += '<tr class="shift-total-row"><td class="shift-employee-cell">Totali</td>';
   totals.forEach(dayTotal => {
     html += `<td class="shift-total-cell"><div class="shift-total-line">M: ${dayTotal.M}</div><div class="shift-total-line">P: ${dayTotal.P}</div><div class="shift-total-line">S: ${dayTotal.S}</div></td>`;
@@ -2992,6 +2944,21 @@ function data() {
   let card = sanitizeMoneyInput($('card').value);
   let h = [...document.querySelectorAll('.hour')].map(x => sanitizeHourInput(x.value));
   let th = h.reduce((a, b) => a + b, 0);
+
+  // Build hoursByEmployee map from DOM rows (new format, keyed by uid)
+  const hoursByEmployee = {};
+  document.querySelectorAll('#hours tr[data-emp-id]').forEach(row => {
+    const empId = row.getAttribute('data-emp-id');
+    const input = row.querySelector('.hour');
+    if (!empId || !input) return;
+    const hrs = sanitizeHourInput(input.value);
+    if (hrs <= 0) return; // skip zero-hour employees
+    const empData = employeesData.find(e => e.id === empId) || {};
+    const empName = row.querySelector('td')?.textContent?.trim() || empData.name || empId;
+    const role = normalizeStoredRole(empData.role || empData.appRole || 'waiter');
+    hoursByEmployee[empId] = { name: empName, hours: hrs, role };
+  });
+
   let p = state.kitchenPercent / 100;
   let salaCash = cash * (1 - p);
   let salaCard = card * (1 - p);
@@ -3004,7 +2971,8 @@ function data() {
     card: card,
     total: cash + card,
     totalHours: th,
-    hours: h,
+    hours: h,             // keep for backward compat
+    hoursByEmployee,      // new format: uid → { name, hours, role }
     salaCash: salaCash,
     salaCard: salaCard,
     cucinaCash: cucinaCash,
@@ -3186,9 +3154,16 @@ function shareWhatsApp() {
   
   let pricePerHourCash = d.salaCash / d.totalHours;
   let pricePerHourCard = d.salaCard / d.totalHours;
-  let employeesWorked = state.employees
-    .map((name, i) => ({ name, hours: d.hours[i] || 0 }))
-    .filter(e => e.hours > 0);
+  let employeesWorked;
+  if (d.hoursByEmployee && Object.keys(d.hoursByEmployee).length > 0) {
+    // New format
+    employeesWorked = Object.values(d.hoursByEmployee).filter(e => e.hours > 0);
+  } else {
+    // Legacy format: array by position
+    employeesWorked = state.employees
+      .map((name, i) => ({ name, hours: d.hours[i] || 0 }))
+      .filter(e => e.hours > 0);
+  }
   
   if (employeesWorked.length) {
     message += `👥 *Dettaglio per Dipendente:*\n`;
@@ -3237,12 +3212,14 @@ function history() {
   state.history.forEach((r, i) => {
     html += `<tr><td>${fmt(r.date)}</td>`;
     
-    let totalHours = r.hours ? r.hours.reduce((a, b) => a + b, 0) : 0;
+    // Support both new hoursByEmployee map and legacy hours array
+    const hoursArr = getHoursArrayFromDay(r);
+    let totalHours = hoursArr.reduce((a, b) => a + b, 0);
     let salaData = split(r);
     let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
     let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
     
-    (r.hours || []).forEach((h, j) => {
+    hoursArr.forEach((h, j) => {
       let empTotal = (pricePerHourCash + pricePerHourCard) * h;
       html += `<td>${euro(empTotal)}</td>`;
     });
@@ -3294,14 +3271,16 @@ function stats() {
   });
   
   rows.forEach(day => {
-    if (!day.hours || day.hours.length === 0) return;
+    if (!day.hours && !day.hoursByEmployee) return;
     
-    let totalHours = day.hours.reduce((a, b) => a + b, 0);
+    // Support both new hoursByEmployee map and legacy hours array
+    const hoursArr = getHoursArrayFromDay(day);
+    let totalHours = hoursArr.reduce((a, b) => a + b, 0);
     let salaData = split(day);
     let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
     let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
     
-    day.hours.forEach((h, idx) => {
+    hoursArr.forEach((h, idx) => {
       if (idx < state.employees.length) {
         let empName = state.employees[idx];
         empStats[empName].cash += pricePerHourCash * h;
@@ -3423,11 +3402,13 @@ function exportCSV() {
     let salaData = split(r);
     let row = [fmt(r.date)];
     
-    let totalHours = r.hours ? r.hours.reduce((a, b) => a + b, 0) : 0;
+    // Support both new hoursByEmployee map and legacy hours array
+    const hoursArr = getHoursArrayFromDay(r);
+    let totalHours = hoursArr.reduce((a, b) => a + b, 0);
     let pricePerHourCash = totalHours > 0 ? salaData.salaCash / totalHours : 0;
     let pricePerHourCard = totalHours > 0 ? salaData.salaCard / totalHours : 0;
     
-    (r.hours || []).forEach(h => {
+    hoursArr.forEach(h => {
       row.push(num((pricePerHourCash + pricePerHourCard) * h));
     });
     
