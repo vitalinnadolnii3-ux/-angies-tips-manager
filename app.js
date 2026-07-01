@@ -2417,6 +2417,16 @@ function getAttendanceInlineCellKey(uid, date) {
   return `${date}__${uid}`;
 }
 
+function parseAttendanceInlineCellKey(key) {
+  const value = String(key || '');
+  const sepIndex = value.indexOf('__');
+  if (sepIndex === -1) return { date: '', uid: '' };
+  return {
+    date: value.slice(0, sepIndex),
+    uid: value.slice(sepIndex + 2)
+  };
+}
+
 function findAttendanceRow(uid) {
   return [...document.querySelectorAll('#attendanceTable tr[data-att-row-uid]')]
     .find(row => row.getAttribute('data-att-row-uid') === uid) || null;
@@ -2555,8 +2565,12 @@ async function flushAttendanceInlineSave(input) {
   return saveAttendanceInlineCell(input, { force: true });
 }
 
+function isNewDayPageActiveForDate(date) {
+  return document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date;
+}
+
 async function syncNewDayHoursForAttendanceDate(date) {
-  if (document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date) {
+  if (isNewDayPageActiveForDate(date)) {
     await populateHoursFromAttendance(date, { forceRefresh: true, silent: true });
   }
 }
@@ -2836,7 +2850,7 @@ async function attachAttendanceListeners() {
     applyAttendanceWeekEntries(weekStart, snap.exists() ? (snap.val() || {}) : {});
     setAttendanceStatus('');
     if (attendanceInlineEditingKey) {
-      const [, activeUid = ''] = attendanceInlineEditingKey.split('__');
+      const { uid: activeUid } = parseAttendanceInlineCellKey(attendanceInlineEditingKey);
       if (activeUid) updateAttendanceRowDisplay(activeUid);
       return;
     }
