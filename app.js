@@ -74,7 +74,6 @@ const MINUTES_PER_DAY = 24 * 60;
 const PROFILE_LOAD_TIMEOUT_MS = 3000;
 const PRIMARY_LOAD_TIMEOUT_MS = 3000;
 const SECONDARY_LOAD_TIMEOUT_MS = 2000;
-const ATTENDANCE_LOAD_TIMEOUT_MS = 15000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
@@ -1220,13 +1219,12 @@ async function ensureUsersLoaded() {
 async function ensureAttendanceLoaded() {
   if (sectionLoaded.attendance) return;
   if (attendanceLoadPromise) return attendanceLoadPromise;
-  attendanceLoadPromise = withTimeout(loadAttendanceData(), ATTENDANCE_LOAD_TIMEOUT_MS, 'Caricamento entrata e uscita')
+  attendanceLoadPromise = loadAttendanceData()
     .then(() => {
       sectionLoaded.attendance = true;
     })
     .catch(e => {
-      setAttendanceStatus('Caricamento lento — riprova toccando la scheda "Entrata e uscita".', 'error');
-      throw e;
+      console.error('[Attendance] Errore caricamento dati RTDB:', e);
     })
     .finally(() => {
       attendanceLoadPromise = null;
@@ -2380,16 +2378,7 @@ async function loadAttendanceData(forceRefresh = false) {
       const path = canViewAllAttendance() ? attendancePath(day.date) : attendancePath(day.date, currentUserUid);
       return rtdbGet(rtdbRef(rtdb, path)).then(snapshot => ({ date: day.date, value: snapshot.val() }));
     });
-    const shiftsQuery = query(
-      shiftCollection(),
-      where('date', '>=', weekDates[0].date),
-      where('date', '<=', weekDates[6].date),
-      orderBy('date', 'asc')
-    );
-    const [attendanceValues, shiftSnapshot] = await Promise.all([
-      Promise.all(attendanceReads),
-      getDocs(shiftsQuery)
-    ]);
+    const attendanceValues = await Promise.all(attendanceReads);
     attendanceWeekEntries = {};
     attendanceValues.forEach(({ date, value }) => {
       if (canViewAllAttendance()) {
@@ -2399,11 +2388,29 @@ async function loadAttendanceData(forceRefresh = false) {
       }
     });
     attendanceDayEntries = attendanceWeekEntries[selectedDate] || {};
-    const fetchedShifts = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
-    attendanceShiftData = mergePresetWeekShifts(fetchedShifts, weekDates);
+    attendanceShiftData = mergePresetWeekShifts([], weekDates);
     attendanceLoadedWeekStart = weekStart;
     setAttendanceStatus(canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.', 'info');
     renderAttendance();
+    // Carica i turni Firestore in background — non blocca il render della pagina
+    const capturedWeekStart = weekStart;
+    const shiftsQuery = query(
+      shiftCollection(),
+      where('date', '>=', weekDates[0].date),
+      where('date', '<=', weekDates[6].date),
+      orderBy('date', 'asc')
+    );
+    getDocs(shiftsQuery)
+      .then(shiftSnapshot => {
+        // Ignora risultati obsoleti se l'utente ha cambiato settimana
+        if (attendanceLoadedWeekStart !== capturedWeekStart) return;
+        const fetchedShifts = shiftSnapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+        attendanceShiftData = mergePresetWeekShifts(fetchedShifts, weekDates);
+        renderAttendance();
+      })
+      .catch(e => {
+        console.warn('[Attendance] Caricamento turni Firestore non riuscito, uso turni preset:', e);
+      });
   } catch (e) {
     console.error('Errore caricamento entrate e uscite:', e);
     attendanceDayEntries = {};
