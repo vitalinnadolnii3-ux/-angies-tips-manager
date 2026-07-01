@@ -2369,19 +2369,20 @@ async function persistAttendanceRecord(date, uid, record, { silentSuccess = fals
   console.log("weekStart", weekStart);
   console.log("date", date);
   console.log("uid", uid);
-  console.log("path", `attendance/${weekStart}/${date}/${uid}`);
+  console.log("path Firebase", `attendance/${weekStart}/${date}/${uid}`);
+  console.log("workedHours", record?.workedHours);
   console.log("record", record);
   try {
     await rtdbSet(rtdbRef(rtdb, path), record);
     setAttendanceLocalEntry(date, uid, record);
-    console.log("ATTENDANCE SAVE SUCCESS");
+    console.log("SAVE SUCCESS");
     void writeLog(`attendance_save:${date}:${uid}`);
     if (silentSuccess) setAttendanceStatus('');
     else setAttendanceStatus(successMessage, 'info');
     return true;
   } catch (e) {
     const message = getFriendlyRtdbMessage(e, `Errore salvataggio entrata/uscita: ${e?.message || e}`);
-    console.error('[Attendance] ERRORE salvataggio su path', path, ':', e);
+    console.error('[Attendance] SAVE ERROR on path', path, e);
     setAttendanceStatus(message, 'error');
     alert(message);
     return false;
@@ -2520,6 +2521,9 @@ async function saveAttendanceInlineCell(input, { force = false } = {}) {
   const uid = input.getAttribute('data-att-uid') || '';
   const date = input.getAttribute('data-att-date') || '';
   if (!uid || !date) return false;
+  console.log('SAVE CLICKED (inline)');
+  console.log('uid', uid);
+  console.log('date', date);
   const rawText = normalizeAttendanceRawText(input.value);
   if (!force && rawText === (input.dataset.initialValue || '')) return true;
   const key = getAttendanceInlineCellKey(uid, date);
@@ -2792,6 +2796,24 @@ function renderAttendanceTable() {
       input.addEventListener('input', () => {
         autoResizeAttendanceInlineInput(input);
         scheduleAttendanceInlineSave(input);
+        // Immediate #Ore update while typing (before save)
+        const uid = input.getAttribute('data-att-uid');
+        const date = input.getAttribute('data-att-date');
+        try {
+          const rawText = normalizeAttendanceRawText(input.value);
+          if (rawText) {
+            const parsed = parseAttendanceRawText(rawText);
+            const minutes = calcEntryWorkedMinutes(parsed);
+            const row = findAttendanceRow(uid);
+            if (row) {
+              const hoursCell = row.querySelector(`[data-att-hours-date="${date}"]`);
+              if (hoursCell) hoursCell.textContent = minutes > 0 ? formatWorkedHours(minutes) : '-';
+            }
+          }
+        } catch (e) {
+          // Invalid format while typing — keep showing previous value
+          console.debug('[Attendance] Parse error while typing:', e.message);
+        }
       });
       input.addEventListener('blur', async () => {
         await flushAttendanceInlineSave(input);
@@ -2801,8 +2823,7 @@ function renderAttendanceTable() {
         const uid = input.getAttribute('data-att-uid');
         const date = input.getAttribute('data-att-date');
         if (!uid || !date) return;
-        const saved = await flushAttendanceInlineSave(input);
-        if (!saved) return;
+        await flushAttendanceInlineSave(input);
         openAttendanceEditor(uid, date);
       });
     });
@@ -2865,11 +2886,18 @@ async function attachAttendanceListeners() {
 }
 
 async function loadAttendanceData(forceRefresh = false) {
+  const weekDates = getCurrentAttendanceWeekDates();
+  const weekStart = weekDates?.[0]?.date || '';
+  console.log('[loadAttendanceData] weekStart:', weekStart, '| forceRefresh:', forceRefresh);
   return attachAttendanceListeners();
 }
 
 async function saveAttendanceEntry(options = {}) {
   const { silentSuccess = false } = options;
+  console.log('SAVE CLICKED (editor)');
+  console.log('uid', editingAttendanceUid);
+  console.log('date', editingAttendanceDate);
+  console.log('weekStart', getWeekStartISO(editingAttendanceDate));
   if (!canManageAttendance()) {
     const msg = 'Accesso consentito solo ad Admin/Manager/Responsabile.';
     setAttendanceStatus(msg, 'error');
@@ -3634,8 +3662,11 @@ async function saveDay() {
 async function populateHoursFromAttendance(date, options = {}) {
   const { forceRefresh = false, silent = false } = options;
   if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
+  const weekStart = getWeekStartISO(date);
+  console.log('[populateHoursFromAttendance] date:', date, '| weekStart:', weekStart, '| uid:', currentUserUid);
   try {
     const dayAttendance = await readAttendanceDayEntries(date, { forceRefresh });
+    console.log('[populateHoursFromAttendance] dayAttendance:', dayAttendance ? JSON.stringify(dayAttendance) : null);
     const rows = document.querySelectorAll('#hours tr[data-emp-id]');
     rows.forEach(row => {
       const input = row.querySelector('.hour');
@@ -3659,6 +3690,7 @@ async function populateHoursFromAttendance(date, options = {}) {
       } else if (entry.workedMinutes != null) {
         workedHours = Math.round((Number(entry.workedMinutes) / 60) * 100) / 100;
       }
+      console.log('[populateHoursFromAttendance] uid:', uid, '| workedHours:', workedHours);
       if (workedHours > 0) {
         input.value = workedHours;
       }
