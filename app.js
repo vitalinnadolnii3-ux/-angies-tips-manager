@@ -1406,17 +1406,26 @@ async function createEmployee() {
       console.warn('[Creazione dipendente] generatePasswordResetLink non disponibile, uso email standard:', linkErr?.message || linkErr);
     }
 
+    const activationEmailSent = await trySendEmployeeResetEmail(
+      data.normalizedEmail,
+      'Dipendente creato',
+      `employee_create:${uid}:email`
+    );
     if (activationLink) {
-      showResetLinkModal(activationLink, data.normalizedName || data.normalizedEmail);
-      notify(`Dipendente creato. Condividi il link di attivazione con ${data.normalizedEmail}.`, 'info');
+      const activationMessage = activationEmailSent
+        ? `Email di attivazione/reset inviata a ${data.normalizedEmail}. Se necessario puoi condividere anche questo link diretto.`
+        : `Non è stato possibile inviare l'email di reset a ${data.normalizedEmail}. Puoi condividere manualmente questo link diretto.`;
+      showResetLinkModal(
+        activationLink,
+        data.normalizedName || data.normalizedEmail,
+        activationMessage,
+        activationEmailSent ? 'info' : 'error'
+      );
+      notify(`Dipendente creato. ${activationMessage}`, activationEmailSent ? 'info' : 'error');
+    } else if (activationEmailSent) {
+      notify(`Dipendente creato. Email di attivazione/reset inviata a ${data.normalizedEmail}.`, 'info');
     } else {
-      try {
-        await sendPasswordResetEmail(auth, data.normalizedEmail);
-        notify(`Dipendente creato. Email di attivazione/reset inviata a ${data.normalizedEmail}.`, 'info');
-      } catch (resetErr) {
-        console.warn('Dipendente creato ma invio email reset non riuscito:', resetErr);
-        notify(`Dipendente creato, ma non è stato possibile inviare l'email di reset a ${data.normalizedEmail}.`, 'error');
-      }
+      notify(`Dipendente creato, ma non è stato possibile inviare l'email di reset a ${data.normalizedEmail}.`, 'error');
     }
   } catch (e) {
     console.error('Errore salvataggio profilo dipendente:', e);
@@ -1583,28 +1592,48 @@ async function resetEmployeePassword(id) {
     console.warn('[Reset password] generatePasswordResetLink non disponibile, uso email standard:', linkErr?.message || linkErr);
   }
 
+  const resetEmailSent = await trySendEmployeeResetEmail(
+    email,
+    'Reset password',
+    `employee_password_reset:${employee.id}:email`
+  );
   if (resetLink) {
-    showResetLinkModal(resetLink, employee.name || email);
+    const resetMessage = resetEmailSent
+      ? `Email di reset inviata a ${email}. Se necessario puoi condividere anche questo link diretto.`
+      : `Non è stato possibile inviare l'email di reset a ${email}. Puoi condividere manualmente questo link diretto.`;
+    showResetLinkModal(
+      resetLink,
+      employee.name || email,
+      resetMessage,
+      resetEmailSent ? 'info' : 'error'
+    );
     void writeLog(`employee_password_reset:${employee.id}:link`);
+    notify(resetMessage, resetEmailSent ? 'info' : 'error');
+  } else if (resetEmailSent) {
+    notify(`Email di reset inviata a ${email}.`, 'info');
   } else {
-    try {
-      await sendPasswordResetEmail(auth, email);
-      void writeLog(`employee_password_reset:${employee.id}:email`);
-      notify(`Email di reset inviata a ${email}.`, 'info');
-    } catch (e) {
-      console.error('Errore invio email reset password:', e);
-      notify('Impossibile reimpostare la password: ' + getErrorDetails(e), 'error');
-    }
+    notify('Impossibile reimpostare la password: email di reset non inviata.', 'error');
   }
 }
 
-function showResetLinkModal(link, name) {
+async function trySendEmployeeResetEmail(email, contextLabel = 'Reset password', logEvent = '') {
+  try {
+    await sendPasswordResetEmail(auth, email);
+    if (logEvent) void writeLog(logEvent);
+    return true;
+  } catch (e) {
+    console.error(`Errore invio email reset password [${contextLabel}]:`, e);
+    return false;
+  }
+}
+
+function showResetLinkModal(link, name, statusMessage = '', statusType = 'info') {
   const anchor = $('resetLinkAnchor');
   if (anchor) {
     anchor.href = link;
     anchor.textContent = `Apri il link di reset per ${esc(name)}`;
   }
-  setStatus('resetLinkStatus', '', 'info');
+  setStatus('resetLinkStatus', statusMessage, statusType);
   $('resetLinkModal')?.classList.remove('hidden');
 }
 
