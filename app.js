@@ -2266,7 +2266,7 @@ function renderAttendanceTable() {
     const totalHoursNum = totalWorkedMinutes / 60;
     const diffHours = contractHours > 0 ? totalHoursNum - contractHours : null;
     const diffDisplay = diffHours !== null ? `${diffHours >= 0 ? '+' : ''}${num(diffHours)} h` : '-';
-    const diffClass = diffHours === null ? '' : (diffHours >= 0 ? 'att-diff-positive' : 'att-diff-negative');
+    const diffClass = diffHours === null ? '' : (diffHours > 0 ? 'att-diff-positive' : diffHours < 0 ? 'att-diff-negative' : 'att-diff-zero');
     html += `<td class="att-total-cell">${oreFatteDisplay}</td>`;
     html += `<td class="att-diff-cell ${diffClass}">${diffDisplay}</td>`;
     html += '</tr>';
@@ -2434,7 +2434,8 @@ async function deleteAttendanceEntry() {
 
 async function saveContractHours(uid, hours) {
   if (!canManageAttendance()) return;
-  const value = Math.max(0, Math.min(168, Number(hours) || 0));
+  const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
+  const value = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(hours) || 0));
   try {
     await rtdbSet(rtdbRef(rtdb, `contractHours/${uid}`), value);
     contractHoursData[uid] = value;
