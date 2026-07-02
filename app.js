@@ -4069,7 +4069,7 @@ function hours() {
   const canonicalEmpMap = new Map(
     getAllAttendanceEmployees().map(e => [e.name.toLowerCase(), e.id])
   );
-  let html = '<tr><th>Dipendente</th><th>Ore</th><th>Stato turno</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
+  let html = '<tr><th>Dipendente</th><th>Ore</th><th>Stato pagamento</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
   
   state.employees.forEach((n, i) => {
     // Use canonical ID (Firestore UID if available, otherwise employee name) to match attendance keys
