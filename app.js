@@ -83,6 +83,7 @@ const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
 const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
+const CONTRACT_HOURS_DEBOUNCE_MS = 250;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 const sectionLoaded = {
@@ -2883,7 +2884,7 @@ function renderAttendanceTable() {
       });
       input.addEventListener('input', () => {
         clearTimeout(saveTimer);
-        saveTimer = setTimeout(triggerSave, 250);
+        saveTimer = setTimeout(triggerSave, CONTRACT_HOURS_DEBOUNCE_MS);
       });
     });
     table.querySelectorAll('.att-orario-inline').forEach(input => {
