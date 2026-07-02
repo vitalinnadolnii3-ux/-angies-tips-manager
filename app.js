@@ -82,6 +82,7 @@ const SECONDARY_LOAD_TIMEOUT_MS = 2000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
+const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 const sectionLoaded = {
@@ -2280,7 +2281,7 @@ function applyAttendanceWeekEntries(weekStart, weekData) {
         if (record && typeof record === 'object') {
           const normalizedRecord = normalizeAttendanceRecord(record, { uid, date, weekStart });
           if (Number.isFinite(normalizedRecord.oreContratto)) {
-            contractHoursData[uid] = Math.max(0, Math.min(168, Number(normalizedRecord.oreContratto) || 0));
+            contractHoursData[uid] = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(normalizedRecord.oreContratto) || 0));
           }
           setAttendanceLocalEntry(date, uid, normalizedRecord);
         }
@@ -2354,7 +2355,7 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
   const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
   const workedMinutes = calcEntryWorkedMinutes(entryForCalc);
   const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
-  const oreContratto = Math.max(0, Math.min(168, Number(contractHoursData?.[uid]) || 0));
+  const oreContratto = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(contractHoursData?.[uid]) || 0));
   const entrata = normalizeAttendanceTime(entryTime1 || '');
   const uscita = normalizeAttendanceTime(exitTime2 || exitTime1 || '');
   return {
@@ -2384,7 +2385,11 @@ function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = ''
   const source = (record && typeof record === 'object') ? { ...record } : {};
   const resolvedUid = String(source.uid || uid || '');
   const resolvedDate = String(source.date || date || '');
-  const resolvedWeekStart = String(source.weekStart || weekStart || getWeekStartISO(resolvedDate || today()));
+  let resolvedWeekStart = String(source.weekStart || weekStart || '');
+  if (!resolvedWeekStart) {
+    const fallbackDate = resolvedDate || today();
+    resolvedWeekStart = String(getWeekStartISO(fallbackDate));
+  }
   const fallbackEntrata = normalizeAttendanceTime(String(source.entrata || source.entryTime1 || ''));
   const fallbackUscita = normalizeAttendanceTime(String(source.uscita || source.exitTime2 || source.exitTime1 || ''));
   const normalizedEntryTime1 = normalizeAttendanceTime(String(source.entryTime1 || source.entrata || ''));
@@ -2414,8 +2419,8 @@ function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = ''
     ? Math.max(0, Math.round(Number(workedHoursRaw) * 100) / 100)
     : Math.round((workedMinutes / 60) * 100) / 100;
   const oreContratto = Number.isFinite(Number(source.oreContratto))
-    ? Math.max(0, Math.min(168, Number(source.oreContratto)))
-    : Math.max(0, Math.min(168, Number(contractHoursData?.[resolvedUid]) || 0));
+    ? Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(source.oreContratto)))
+    : Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(contractHoursData?.[resolvedUid]) || 0));
   return {
     ...source,
     uid: resolvedUid,
@@ -3068,16 +3073,16 @@ async function deleteAttendanceEntry() {
 
 async function saveContractHours(uid, hours) {
   if (!canManageAttendance()) return;
-  const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
   const value = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(hours) || 0));
   try {
     console.log('[Attendance] CONTRACT SAVE START', { uid, value });
     await rtdbSet(rtdbRef(rtdb, `contractHours/${uid}`), value);
     contractHoursData[uid] = value;
     const weekDates = getCurrentAttendanceWeekDates();
-    const syncTasks = weekDates.map(day => {
-      const existingRecord = (attendanceWeekEntries?.[day.date] || {})[uid];
-      if (!existingRecord || typeof existingRecord !== 'object') return Promise.resolve();
+    const recordsToSync = weekDates
+      .map(day => ({ day, existingRecord: (attendanceWeekEntries?.[day.date] || {})[uid] }))
+      .filter(item => item.existingRecord && typeof item.existingRecord === 'object');
+    const syncTasks = recordsToSync.map(({ day, existingRecord }) => {
       const patchedRecord = normalizeAttendanceRecord({ ...existingRecord, oreContratto: value }, {
         uid,
         date: day.date,
