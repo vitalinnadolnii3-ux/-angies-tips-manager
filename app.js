@@ -380,7 +380,7 @@ function slugifyEmployeeIdPart(value) {
 function generateEmployeeDatabaseId(data = {}, fallback = '') {
   const fullName = [data.name, data.surname].map(normalizeName).filter(Boolean).join(' ');
   const emailPart = normalizeEmail(data.email || '').split('@')[0] || '';
-  const base = slugifyEmployeeIdPart(fullName || data.name || emailPart || fallback);
+  const base = slugifyEmployeeIdPart(fullName || emailPart || fallback);
   return base ? `emp-${base}` : '';
 }
 
@@ -452,8 +452,7 @@ function shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, canonicalE
   const existingEmployeeId = normalizeName(String(existingRecord.employeeId || existingRecord.uid || ''));
   const nextEmployeeId = normalizeName(String(rawEmployeeId || ''));
   if (existingEmployeeId === canonicalEmployeeId) return false;
-  if (nextEmployeeId === canonicalEmployeeId) return true;
-  return false;
+  return nextEmployeeId === canonicalEmployeeId;
 }
 
 function resolveCurrentEmployeeAttendanceId() {
@@ -631,7 +630,10 @@ function getAttendanceWeekQuery(weekDates = getCurrentAttendanceWeekDates()) {
       where('date', '<=', weekEnd)
     );
   }
-  if (!currentEmployeeId) return null;
+  if (!currentEmployeeId) {
+    console.warn('[Attendance] Query non costruita: employeeId corrente mancante.');
+    return null;
+  }
   return query(
     timeEntryCollection(),
     where('employeeId', '==', currentEmployeeId)
@@ -2550,7 +2552,10 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   if (canViewAllAttendance()) {
     dayQuery = query(timeEntryCollection(), where('date', '==', date));
   } else {
-    if (!currentEmployeeId) return null;
+    if (!currentEmployeeId) {
+      console.warn('[Attendance] Lettura giorno saltata: employeeId corrente mancante.');
+      return null;
+    }
     dayQuery = query(
       timeEntryCollection(),
       where('employeeId', '==', currentEmployeeId)
