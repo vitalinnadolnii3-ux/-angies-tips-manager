@@ -502,6 +502,35 @@ function shiftDoc(id) {
   return doc(db, 'restaurants', 'angies', 'shifts', id);
 }
 
+function timeEntryCollection() {
+  return collection(db, 'timeEntries');
+}
+
+function timeEntryDocId(date, employeeId) {
+  return `${date}_${employeeId}`;
+}
+
+function timeEntryDoc(date, employeeId) {
+  return doc(db, 'timeEntries', timeEntryDocId(date, employeeId));
+}
+
+function getAttendanceWeekQuery(weekDates = getCurrentAttendanceWeekDates()) {
+  const weekStart = weekDates?.[0]?.date || '';
+  const weekEnd = weekDates?.[6]?.date || weekStart;
+  if (!weekStart || !weekEnd) return null;
+  if (canViewAllAttendance()) {
+    return query(
+      timeEntryCollection(),
+      where('date', '>=', weekStart),
+      where('date', '<=', weekEnd)
+    );
+  }
+  return query(
+    timeEntryCollection(),
+    where('employeeId', '==', currentUserUid)
+  );
+}
+
 // --- Realtime Database helpers for user role management ---
 
 function rtdbUsers() {
@@ -2296,33 +2325,29 @@ function applyAttendanceWeekEntries(weekStart, weekData) {
 
 async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDates()) {
   const weekStart = weekDates?.[0]?.date || '';
+  const weekEnd = weekDates?.[6]?.date || weekStart;
   if (!weekStart) return { weekStart: '', weekData: {} };
-  console.log('[Attendance] LOAD weekStart:', weekStart);
-  if (canViewAllAttendance()) {
-    const loadPath = attendanceV2Path(weekStart);
-    console.log('[Attendance] LOAD path (admin):', loadPath);
-    const snap = await rtdbGet(rtdbRef(rtdb, loadPath));
-    const weekData = snap.exists() ? (snap.val() || {}) : {};
-    console.log('[Attendance] LOAD dati ricevuti (admin):', snap.exists() ? JSON.stringify(weekData) : '(vuoto)');
-    return { weekStart, weekData };
-  }
-  console.log('[Attendance] LOAD path (utente):', attendanceV2Path(weekStart, '<date>', currentUserUid));
-  const reads = weekDates.map(day =>
-    rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart, day.date, currentUserUid)))
-      .then(snap => ({ date: day.date, value: snap.exists() ? snap.val() : null }))
-  );
-  const results = await Promise.allSettled(reads);
   const weekData = {};
-  results.forEach((result, index) => {
-    const date = weekDates[index]?.date;
-    if (!date) return;
-    if (result.status === 'fulfilled') {
-      weekData[date] = result.value.value ? { [currentUserUid]: result.value.value } : {};
-      if (result.value.value) console.log('[Attendance] LOAD utente data', date, ':', JSON.stringify(result.value.value));
-      return;
-    }
-    console.warn(`[Attendance] Lettura non riuscita per ${date}:`, result.reason);
-    weekData[date] = {};
+  const weekQuery = getAttendanceWeekQuery(weekDates);
+  if (!weekQuery) return { weekStart, weekData };
+  const snap = await getDocs(weekQuery);
+  const records = snap.docs
+    .map(d => ({ id: d.id, ...d.data() }))
+    .filter(entry => {
+      const date = String(entry?.date || '');
+      if (!date) return false;
+      const isWeekDate = date >= weekStart && date <= weekEnd;
+      if (!isWeekDate) return false;
+      if (canViewAllAttendance()) return true;
+      return String(entry?.employeeId || entry?.uid || '') === currentUserUid;
+    });
+  console.log("CARICO ENTRATA USCITA", records);
+  records.forEach(record => {
+    const date = String(record?.date || '');
+    const uid = String(record?.employeeId || record?.uid || '');
+    if (!date || !uid) return;
+    if (!weekData[date]) weekData[date] = {};
+    weekData[date][uid] = record;
   });
   return { weekStart, weekData };
 }
@@ -2334,14 +2359,25 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   if (!forceRefresh && attendanceLoadedWeekStart === weekStart && cached && typeof cached === 'object' && Object.keys(cached).length > 0) {
     return cached;
   }
-  const daySnap = await rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart, date)));
-  if (daySnap.exists()) {
-    const rawDayData = daySnap.val() || {};
-    const dayData = {};
-    Object.entries(rawDayData).forEach(([uid, record]) => {
-      if (!record || typeof record !== 'object') return;
-      dayData[uid] = normalizeAttendanceRecord(record, { uid, date, weekStart });
-    });
+  let dayQuery;
+  if (canViewAllAttendance()) {
+    dayQuery = query(timeEntryCollection(), where('date', '==', date));
+  } else {
+    dayQuery = query(
+      timeEntryCollection(),
+      where('employeeId', '==', currentUserUid)
+    );
+  }
+  const daySnap = await getDocs(dayQuery);
+  const dayData = {};
+  daySnap.docs.forEach(d => {
+    const record = d.data() || {};
+    if (String(record.date || '') !== date) return;
+    const uid = String(record.employeeId || record.uid || '');
+    if (!uid) return;
+    dayData[uid] = normalizeAttendanceRecord(record, { uid, date, weekStart });
+  });
+  if (Object.keys(dayData).length) {
     if (attendanceLoadedWeekStart === weekStart) {
       attendanceWeekEntries[date] = dayData;
       if (!state.attendance || typeof state.attendance !== 'object') state.attendance = {};
@@ -2361,6 +2397,7 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
   const uscita = normalizeAttendanceTime(exitTime2 || exitTime1 || '');
   return {
     uid,
+    employeeId: uid,
     employeeName,
     date,
     weekStart,
@@ -2384,7 +2421,7 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
 
 function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = '' } = {}) {
   const source = (record && typeof record === 'object') ? { ...record } : {};
-  const resolvedUid = String(source.uid || uid || '');
+  const resolvedUid = String(source.employeeId || source.uid || uid || '');
   const resolvedDate = String(source.date || date || '');
   let resolvedWeekStart = String(source.weekStart || weekStart || '');
   if (!resolvedWeekStart) {
@@ -2425,6 +2462,7 @@ function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = ''
   return {
     ...source,
     uid: resolvedUid,
+    employeeId: resolvedUid,
     employeeName: String(source.employeeName || ''),
     date: resolvedDate,
     weekStart: resolvedWeekStart,
@@ -2448,27 +2486,26 @@ function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = ''
 
 async function persistAttendanceRecord(date, uid, record, { silentSuccess = false, successMessage = 'Entrata/uscita salvata.' } = {}) {
   const weekStart = record?.weekStart || getWeekStartISO(date);
-  const path = attendanceV2Path(weekStart, date, uid);
   const payload = normalizeAttendanceRecord(record, { uid, date, weekStart });
-  console.log("ATTENDANCE SAVE START");
-  console.log("weekStart", weekStart);
-  console.log("date", date);
-  console.log("uid", uid);
-  console.log("path Firebase", `attendance/${weekStart}/${date}/${uid}`);
-  console.log("workedHours", payload?.workedHours);
-  console.log("record", payload);
+  console.log("SALVO ENTRATA USCITA", {
+    date,
+    employeeId: uid,
+    oreContratto: payload?.oreContratto ?? 0,
+    entrata: payload?.entrata || '',
+    uscita: payload?.uscita || '',
+    oreCalcolate: payload?.oreCalcolate ?? 0
+  });
   try {
-    await rtdbSet(rtdbRef(rtdb, path), payload);
+    await setDoc(timeEntryDoc(date, uid), payload, { merge: true });
     setAttendanceLocalEntry(date, uid, payload);
     if (Number.isFinite(payload?.oreContratto)) contractHoursData[uid] = Number(payload.oreContratto);
-    console.log("SAVE SUCCESS");
     void writeLog(`attendance_save:${date}:${uid}`);
     if (silentSuccess) setAttendanceStatus('');
     else setAttendanceStatus(successMessage, 'info');
     return true;
   } catch (e) {
-    const message = getFriendlyRtdbMessage(e, `Errore salvataggio entrata/uscita: ${e?.message || e}`);
-    console.error('[Attendance] SAVE ERROR on path', path, e);
+    const message = `Errore salvataggio Firebase: ${getFriendlyFirestoreMessage(e, e?.message || 'Scrittura non riuscita.')}`;
+    console.error('[Attendance] SAVE ERROR on doc', timeEntryDocId(date, uid), e);
     setAttendanceStatus(message, 'error');
     alert(message);
     return false;
@@ -2476,17 +2513,15 @@ async function persistAttendanceRecord(date, uid, record, { silentSuccess = fals
 }
 
 async function removeAttendanceRecord(date, uid, { successMessage = 'Entrata/uscita eliminata.', silentSuccess = false } = {}) {
-  const weekStart = getWeekStartISO(date);
-  const path = attendanceV2Path(weekStart, date, uid);
   try {
-    await rtdbSet(rtdbRef(rtdb, path), null);
+    await deleteDoc(timeEntryDoc(date, uid));
     deleteAttendanceLocalEntry(date, uid);
     void writeLog(`attendance_delete:${date}:${uid}`);
     if (silentSuccess) setAttendanceStatus('');
     else setAttendanceStatus(successMessage, 'info');
     return true;
   } catch (e) {
-    const message = getFriendlyRtdbMessage(e, `Errore salvataggio entrata/uscita: ${e?.message || e}`);
+    const message = `Errore salvataggio Firebase: ${getFriendlyFirestoreMessage(e, e?.message || 'Eliminazione non riuscita.')}`;
     console.error('[Attendance] Errore eliminazione:', e);
     setAttendanceStatus(message, 'error');
     alert(message);
@@ -2948,26 +2983,38 @@ async function attachAttendanceListeners() {
   resetAttendanceLocalEntries();
   setAttendanceStatus('Caricamento entrate e uscite...', 'info');
   renderAttendance();
-  // Load contract hours (non-blocking)
-  rtdbGet(rtdbRef(rtdb, 'contractHours')).then(snap => {
-    contractHoursData = snap.exists() ? (snap.val() || {}) : {};
-    renderAttendanceTable();
-  }).catch(e => {
-    console.warn('[Attendance] Ore contrattuali non caricate:', e);
-  });
   try {
     await refreshAttendanceState(weekDates);
   } catch (e) {
     console.error('[Attendance] Errore caricamento:', e);
     sectionLoaded.attendance = false;
     attendanceLoadedWeekStart = '';
-    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Impossibile caricare entrata e uscita.'), 'error');
+    setAttendanceStatus(getFriendlyFirestoreMessage(e, 'Impossibile caricare entrata e uscita.'), 'error');
     return;
   }
-  if (!canViewAllAttendance()) return;
-  const weekRef = rtdbRef(rtdb, attendanceV2Path(weekStart));
-  const unsub = rtdbOnValue(weekRef, snap => {
-    applyAttendanceWeekEntries(weekStart, snap.exists() ? (snap.val() || {}) : {});
+  const weekQuery = getAttendanceWeekQuery(weekDates);
+  if (!weekQuery) return;
+  attendanceV2Unsub = onSnapshot(weekQuery, snap => {
+    const records = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter(entry => {
+        const date = String(entry?.date || '');
+        if (!date) return false;
+        const isWeekDate = date >= weekStart && date <= (weekDates?.[6]?.date || weekStart);
+        if (!isWeekDate) return false;
+        if (canViewAllAttendance()) return true;
+        return String(entry?.employeeId || entry?.uid || '') === currentUserUid;
+      });
+    console.log("CARICO ENTRATA USCITA", records);
+    const weekData = {};
+    records.forEach(record => {
+      const date = String(record?.date || '');
+      const uid = String(record?.employeeId || record?.uid || '');
+      if (!date || !uid) return;
+      if (!weekData[date]) weekData[date] = {};
+      weekData[date][uid] = record;
+    });
+    applyAttendanceWeekEntries(weekStart, weekData);
     setAttendanceStatus('');
     if (attendanceInlineEditingKey) {
       const { uid: activeUid } = parseAttendanceInlineCellKey(attendanceInlineEditingKey);
@@ -2976,12 +3023,11 @@ async function attachAttendanceListeners() {
     }
     renderAttendance();
   }, err => {
-    console.error('[Attendance] Errore listener RTDB:', err);
+    console.error('[Attendance] Errore listener Firestore:', err);
     sectionLoaded.attendance = false;
     attendanceLoadedWeekStart = '';
-    setAttendanceStatus(getFriendlyRtdbMessage(err, 'Impossibile aggiornare entrata e uscita.'), 'error');
+    setAttendanceStatus(getFriendlyFirestoreMessage(err, 'Impossibile aggiornare entrata e uscita.'), 'error');
   });
-  attendanceV2Unsub = unsub;
 }
 
 async function loadAttendanceData(forceRefresh = false) {
@@ -3077,20 +3123,33 @@ async function saveContractHours(uid, hours) {
   const value = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(hours) || 0));
   try {
     console.log('[Attendance] CONTRACT SAVE START', { uid, value });
-    await rtdbSet(rtdbRef(rtdb, `contractHours/${uid}`), value);
     contractHoursData[uid] = value;
     const weekDates = getCurrentAttendanceWeekDates();
-    const recordsToSync = weekDates
-      .map(day => ({ day, existingRecord: (attendanceWeekEntries?.[day.date] || {})[uid] }))
-      .filter(item => item.existingRecord && typeof item.existingRecord === 'object');
-    const syncTasks = recordsToSync.map(({ day, existingRecord }) => {
-      const patchedRecord = normalizeAttendanceRecord({ ...existingRecord, oreContratto: value }, {
+    const employee = getAttendanceEmployees().find(e => e.id === uid);
+    const syncTasks = weekDates.map(day => {
+      const existingRecord = (attendanceWeekEntries?.[day.date] || {})[uid] || null;
+      const patchedRecord = normalizeAttendanceRecord({
+        ...(existingRecord || {}),
+        uid,
+        employeeId: uid,
+        employeeName: existingRecord?.employeeName || employee?.name || '',
+        date: day.date,
+        weekStart: getWeekStartISO(day.date),
+        oreContratto: value
+      }, {
         uid,
         date: day.date,
         weekStart: getWeekStartISO(day.date)
       });
-      const path = attendanceV2Path(getWeekStartISO(day.date), day.date, uid);
-      return rtdbSet(rtdbRef(rtdb, path), patchedRecord).then(() => {
+      console.log("SALVO ENTRATA USCITA", {
+        date: day.date,
+        employeeId: uid,
+        oreContratto: patchedRecord?.oreContratto ?? 0,
+        entrata: patchedRecord?.entrata || '',
+        uscita: patchedRecord?.uscita || '',
+        oreCalcolate: patchedRecord?.oreCalcolate ?? 0
+      });
+      return setDoc(timeEntryDoc(day.date, uid), patchedRecord, { merge: true }).then(() => {
         setAttendanceLocalEntry(day.date, uid, patchedRecord);
       });
     });
@@ -3100,7 +3159,7 @@ async function saveContractHours(uid, hours) {
   } catch (e) {
     console.error('[Attendance] CONTRACT SAVE ERROR', { uid, value, error: e });
     console.warn('[Attendance] Impossibile salvare ore contrattuali:', e);
-    setAttendanceStatus(getFriendlyRtdbMessage(e, 'Impossibile salvare le ore contrattuali.'), 'error');
+    setAttendanceStatus(`Errore salvataggio Firebase: ${getFriendlyFirestoreMessage(e, 'Impossibile salvare le ore contrattuali.')}`, 'error');
   }
 }
 
@@ -3817,7 +3876,7 @@ async function populateHoursFromAttendance(date, options = {}) {
     updateHourCalculations();
   } catch (e) {
     console.error('[NuovaGiornata] Errore caricamento ore da attendance:', e);
-    if (!silent) notify(getFriendlyRtdbMessage(e, 'Impossibile leggere le ore da entrata e uscita.'), 'error');
+    if (!silent) notify(getFriendlyFirestoreMessage(e, 'Impossibile leggere le ore da entrata e uscita.'), 'error');
   }
 }
 
