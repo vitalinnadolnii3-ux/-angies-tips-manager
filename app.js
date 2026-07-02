@@ -2934,19 +2934,33 @@ async function saveAttendancePaymentStatusForEmployeeWeek(uid, paymentStatus, op
       return { date, entry };
     })
     .filter(Boolean);
-  if (existingEntries.length && getAttendanceEmployeeWeekPaymentStatus(uid, weekDates) === normalizedStatus) return true;
+  let currentWeekStatus = ATTENDANCE_PAYMENT_STATUS.UNPAID;
+  if (existingEntries.length) {
+    const latestEntry = [...existingEntries].sort((a, b) => {
+      const updatedA = String(a?.entry?.updatedAt || '');
+      const updatedB = String(b?.entry?.updatedAt || '');
+      if (updatedA && updatedB && updatedA !== updatedB) return updatedB.localeCompare(updatedA);
+      return String(b?.date || '').localeCompare(String(a?.date || ''));
+    })[0];
+    currentWeekStatus = getAttendancePaymentStatus(latestEntry?.entry || null);
+  }
+  if (existingEntries.length && currentWeekStatus === normalizedStatus) {
+    if (reloadAfterSave) await reloadAttendanceAfterMutation(weekStart, 'Stato pagamento aggiornato e ricaricato.');
+    return true;
+  }
   const employee = getAttendanceEmployees().find(e => e.id === uid);
   const successMessage = normalizedStatus === ATTENDANCE_PAYMENT_STATUS.PAID
     ? 'Turno segnato come pagato.'
     : 'Turno segnato come non pagato.';
+  const fallbackDate = weekDates.find(day => String(day?.date || '') === today())?.date || weekStart;
   const writes = existingEntries.length ? existingEntries : [{
-    date: weekStart,
+    date: fallbackDate,
     entry: {
       uid,
       employeeId: uid,
       employeeName: employee?.name || '',
-      date: weekStart,
-      weekStart
+      date: fallbackDate,
+      weekStart: getWeekStartISO(fallbackDate)
     }
   }];
   for (const item of writes) {
@@ -3191,6 +3205,10 @@ function renderAttendanceTable() {
   if (!table) return;
   const employees = getAttendanceEmployees();
   const weekDates = getCurrentAttendanceWeekDates();
+  // Dipendente, Ore contratt., Ore fatte, Diff. ore, Stato
+  const attendanceFixedColumns = 5;
+  // Ogni giorno ha 2 colonne: Orario e #Ore
+  const attendanceColumnsPerDay = 2;
   const canEdit = canManageAttendance();
   const weekStart = weekDates?.[0]?.date || '';
   console.log('[Attendance] RENDER tabella - weekStart:', weekStart, '| weekEntries keys:', Object.keys(attendanceWeekEntries || {}));
@@ -3215,7 +3233,7 @@ function renderAttendanceTable() {
   // Body
   html += '<tbody>';
   if (!employees.length) {
-    html += `<tr><td colspan="${5 + weekDates.length * 2}">Nessun dipendente disponibile.</td></tr>`;
+    html += `<tr><td colspan="${attendanceFixedColumns + weekDates.length * attendanceColumnsPerDay}">Nessun dipendente disponibile.</td></tr>`;
     html += '</tbody>';
     table.innerHTML = html;
     return;
