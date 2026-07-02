@@ -60,11 +60,23 @@
             "exitTime2": {
               ".validate": "!newData.exists() || newData.isString()"
             },
+            "entrata": {
+              ".validate": "!newData.exists() || newData.isString()"
+            },
+            "uscita": {
+              ".validate": "!newData.exists() || newData.isString()"
+            },
             "isRestDay": {
               ".validate": "newData.isBoolean()"
             },
             "workedHours": {
               ".validate": "newData.isNumber() && newData.val() >= 0"
+            },
+            "oreCalcolate": {
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0)"
+            },
+            "oreContratto": {
+              ".validate": "!newData.exists() || (newData.isNumber() && newData.val() >= 0 && newData.val() <= 168)"
             },
             "workedMinutes": {
               ".validate": "newData.isNumber() && newData.val() >= 0"

@@ -82,6 +82,8 @@ const SECONDARY_LOAD_TIMEOUT_MS = 2000;
 const PROFILE_LOAD_MAX_ATTEMPTS = 2;
 const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitchen'];
 const MAX_TIP_AMOUNT = 100000;
+const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
+const CONTRACT_HOURS_DEBOUNCE_MS = 250;
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 const sectionLoaded = {
@@ -2277,7 +2279,13 @@ function applyAttendanceWeekEntries(weekStart, weekData) {
   Object.entries(weekData || {}).forEach(([date, dateData]) => {
     if (dateData && typeof dateData === 'object') {
       Object.entries(dateData).forEach(([uid, record]) => {
-        if (record && typeof record === 'object') setAttendanceLocalEntry(date, uid, record);
+        if (record && typeof record === 'object') {
+          const normalizedRecord = normalizeAttendanceRecord(record, { uid, date, weekStart });
+          if (Number.isFinite(normalizedRecord.oreContratto)) {
+            contractHoursData[uid] = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(normalizedRecord.oreContratto) || 0));
+          }
+          setAttendanceLocalEntry(date, uid, normalizedRecord);
+        }
       });
       console.log('[Attendance] APPLY', date, '→ uid trovati:', Object.keys(dateData));
     }
@@ -2328,7 +2336,12 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   }
   const daySnap = await rtdbGet(rtdbRef(rtdb, attendanceV2Path(weekStart, date)));
   if (daySnap.exists()) {
-    const dayData = daySnap.val() || {};
+    const rawDayData = daySnap.val() || {};
+    const dayData = {};
+    Object.entries(rawDayData).forEach(([uid, record]) => {
+      if (!record || typeof record !== 'object') return;
+      dayData[uid] = normalizeAttendanceRecord(record, { uid, date, weekStart });
+    });
     if (attendanceLoadedWeekStart === weekStart) {
       attendanceWeekEntries[date] = dayData;
       if (!state.attendance || typeof state.attendance !== 'object') state.attendance = {};
@@ -2343,6 +2356,9 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
   const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
   const workedMinutes = calcEntryWorkedMinutes(entryForCalc);
   const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
+  const oreContratto = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(contractHoursData?.[uid]) || 0));
+  const entrata = normalizeAttendanceTime(entryTime1 || '');
+  const uscita = normalizeAttendanceTime(exitTime2 || exitTime1 || '');
   return {
     uid,
     employeeName,
@@ -2353,7 +2369,11 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
     exitTime1,
     entryTime2,
     exitTime2,
+    entrata,
+    uscita,
     workedHours,
+    oreCalcolate: workedHours,
+    oreContratto,
     workedMinutes,
     isRestDay,
     notes,
@@ -2362,19 +2382,85 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
   };
 }
 
+function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = '' } = {}) {
+  const source = (record && typeof record === 'object') ? { ...record } : {};
+  const resolvedUid = String(source.uid || uid || '');
+  const resolvedDate = String(source.date || date || '');
+  let resolvedWeekStart = String(source.weekStart || weekStart || '');
+  if (!resolvedWeekStart) {
+    const fallbackDate = resolvedDate || today();
+    resolvedWeekStart = String(getWeekStartISO(fallbackDate));
+  }
+  const fallbackEntrata = normalizeAttendanceTime(String(source.entrata || source.entryTime1 || ''));
+  const fallbackUscita = normalizeAttendanceTime(String(source.uscita || source.exitTime2 || source.exitTime1 || ''));
+  const normalizedEntryTime1 = normalizeAttendanceTime(String(source.entryTime1 || source.entrata || ''));
+  const normalizedExitTime1 = normalizeAttendanceTime(String(source.exitTime1 || source.uscita || ''));
+  const normalizedEntryTime2 = normalizeAttendanceTime(String(source.entryTime2 || ''));
+  const normalizedExitTime2 = normalizeAttendanceTime(String(source.exitTime2 || ''));
+  const isRestDay = Boolean(source.isRestDay);
+  const rawText = String(source.rawText || buildAttendanceRawText({
+    entryTime1: normalizedEntryTime1,
+    exitTime1: normalizedExitTime1,
+    entryTime2: normalizedEntryTime2,
+    exitTime2: normalizedExitTime2,
+    isRestDay
+  }) || '');
+  const computedMinutes = calcEntryWorkedMinutes({
+    entryTime1: normalizedEntryTime1,
+    exitTime1: normalizedExitTime1,
+    entryTime2: normalizedEntryTime2,
+    exitTime2: normalizedExitTime2,
+    isRestDay
+  });
+  const workedMinutes = Number.isFinite(Number(source.workedMinutes))
+    ? Math.max(0, Number(source.workedMinutes))
+    : computedMinutes;
+  const workedHoursRaw = source.workedHours ?? source.oreCalcolate;
+  const workedHours = Number.isFinite(Number(workedHoursRaw))
+    ? Math.max(0, Math.round(Number(workedHoursRaw) * 100) / 100)
+    : Math.round((workedMinutes / 60) * 100) / 100;
+  const oreContratto = Number.isFinite(Number(source.oreContratto))
+    ? Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(source.oreContratto)))
+    : Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(contractHoursData?.[resolvedUid]) || 0));
+  return {
+    ...source,
+    uid: resolvedUid,
+    employeeName: String(source.employeeName || ''),
+    date: resolvedDate,
+    weekStart: resolvedWeekStart,
+    rawText,
+    entryTime1: normalizedEntryTime1,
+    exitTime1: normalizedExitTime1,
+    entryTime2: normalizedEntryTime2,
+    exitTime2: normalizedExitTime2,
+    entrata: fallbackEntrata,
+    uscita: fallbackUscita,
+    workedHours,
+    oreCalcolate: workedHours,
+    oreContratto,
+    workedMinutes,
+    isRestDay,
+    notes: String(source.notes || ''),
+    updatedAt: String(source.updatedAt || new Date().toISOString()),
+    updatedBy: String(source.updatedBy || currentUserUid || '')
+  };
+}
+
 async function persistAttendanceRecord(date, uid, record, { silentSuccess = false, successMessage = 'Entrata/uscita salvata.' } = {}) {
   const weekStart = record?.weekStart || getWeekStartISO(date);
   const path = attendanceV2Path(weekStart, date, uid);
+  const payload = normalizeAttendanceRecord(record, { uid, date, weekStart });
   console.log("ATTENDANCE SAVE START");
   console.log("weekStart", weekStart);
   console.log("date", date);
   console.log("uid", uid);
   console.log("path Firebase", `attendance/${weekStart}/${date}/${uid}`);
-  console.log("workedHours", record?.workedHours);
-  console.log("record", record);
+  console.log("workedHours", payload?.workedHours);
+  console.log("record", payload);
   try {
-    await rtdbSet(rtdbRef(rtdb, path), record);
-    setAttendanceLocalEntry(date, uid, record);
+    await rtdbSet(rtdbRef(rtdb, path), payload);
+    setAttendanceLocalEntry(date, uid, payload);
+    if (Number.isFinite(payload?.oreContratto)) contractHoursData[uid] = Number(payload.oreContratto);
     console.log("SAVE SUCCESS");
     void writeLog(`attendance_save:${date}:${uid}`);
     if (silentSuccess) setAttendanceStatus('');
@@ -2782,10 +2868,23 @@ function renderAttendanceTable() {
   // Attach event handlers
   if (canEdit) {
     table.querySelectorAll('.att-contract-input').forEach(input => {
-      input.addEventListener('blur', () => {
+      let saveTimer = null;
+      const triggerSave = () => {
         const uid = input.getAttribute('data-att-contract-uid');
         if (!uid) return;
         void saveContractHours(uid, input.value);
+      };
+      input.addEventListener('blur', () => {
+        clearTimeout(saveTimer);
+        triggerSave();
+      });
+      input.addEventListener('change', () => {
+        clearTimeout(saveTimer);
+        triggerSave();
+      });
+      input.addEventListener('input', () => {
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(triggerSave, CONTRACT_HOURS_DEBOUNCE_MS);
       });
     });
     table.querySelectorAll('.att-orario-inline').forEach(input => {
@@ -2975,13 +3074,31 @@ async function deleteAttendanceEntry() {
 
 async function saveContractHours(uid, hours) {
   if (!canManageAttendance()) return;
-  const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
   const value = Math.max(0, Math.min(MAX_WEEKLY_HOURS, Number(hours) || 0));
   try {
+    console.log('[Attendance] CONTRACT SAVE START', { uid, value });
     await rtdbSet(rtdbRef(rtdb, `contractHours/${uid}`), value);
     contractHoursData[uid] = value;
+    const weekDates = getCurrentAttendanceWeekDates();
+    const recordsToSync = weekDates
+      .map(day => ({ day, existingRecord: (attendanceWeekEntries?.[day.date] || {})[uid] }))
+      .filter(item => item.existingRecord && typeof item.existingRecord === 'object');
+    const syncTasks = recordsToSync.map(({ day, existingRecord }) => {
+      const patchedRecord = normalizeAttendanceRecord({ ...existingRecord, oreContratto: value }, {
+        uid,
+        date: day.date,
+        weekStart: getWeekStartISO(day.date)
+      });
+      const path = attendanceV2Path(getWeekStartISO(day.date), day.date, uid);
+      return rtdbSet(rtdbRef(rtdb, path), patchedRecord).then(() => {
+        setAttendanceLocalEntry(day.date, uid, patchedRecord);
+      });
+    });
+    await Promise.all(syncTasks);
+    console.log('[Attendance] CONTRACT SAVE SUCCESS', { uid, value });
     renderAttendanceTable();
   } catch (e) {
+    console.error('[Attendance] CONTRACT SAVE ERROR', { uid, value, error: e });
     console.warn('[Attendance] Impossibile salvare ore contrattuali:', e);
     setAttendanceStatus(getFriendlyRtdbMessage(e, 'Impossibile salvare le ore contrattuali.'), 'error');
   }
@@ -3687,6 +3804,8 @@ async function populateHoursFromAttendance(date, options = {}) {
       let workedHours = 0;
       if (entry.workedHours != null) {
         workedHours = Number(entry.workedHours);
+      } else if (entry.oreCalcolate != null) {
+        workedHours = Number(entry.oreCalcolate);
       } else if (entry.workedMinutes != null) {
         workedHours = Math.round((Number(entry.workedMinutes) / 60) * 100) / 100;
       }
