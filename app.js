@@ -3074,9 +3074,9 @@ async function syncNewDayHoursForAttendanceDate(date) {
 }
 
 function fmtHrsShort(h) {
-  const n = Math.abs(h);
+  const n = h;
   if (n === Math.floor(n)) return String(Math.floor(n));
-  return n.toFixed(2).replace('.', ',').replace(/,?0+$/, '').replace(',00', '');
+  return n.toFixed(2).replace('.', ',').replace(/,?0+$/, '');
 }
 
 async function loadPrevWeekBalances(weekDates) {
@@ -3103,27 +3103,24 @@ async function loadPrevWeekBalances(weekDates) {
       const uid = String(record.employeeId || record.uid || '');
       if (!uid) return;
       if (!employeeTotals[uid]) {
-        employeeTotals[uid] = { workedMinutes: 0, contractHours: 0, entries: [] };
+        employeeTotals[uid] = { workedMinutes: 0, entries: [] };
       }
       employeeTotals[uid].workedMinutes += calcEntryWorkedMinutes(record);
-      const oreContratto = Number(record.oreContratto || 0);
-      if (oreContratto > employeeTotals[uid].contractHours) {
-        employeeTotals[uid].contractHours = oreContratto;
-      }
       employeeTotals[uid].entries.push({
         paymentStatus: String(record.paymentStatus || ''),
         updatedAt: String(record.updatedAt || ''),
-        date: String(record.date || '')
+        date: String(record.date || ''),
+        oreContratto: Number(record.oreContratto || 0)
       });
     });
     Object.entries(employeeTotals).forEach(([uid, data]) => {
-      const contractHours = data.contractHours;
-      const workedHours = data.workedMinutes / 60;
-      const diffHours = contractHours > 0 ? Math.round((workedHours - contractHours) * 100) / 100 : null;
       const sortedEntries = [...data.entries].sort((a, b) => {
         if (a.updatedAt && b.updatedAt && a.updatedAt !== b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
         return b.date.localeCompare(a.date);
       });
+      const contractHours = sortedEntries[0]?.oreContratto || 0;
+      const workedHours = data.workedMinutes / 60;
+      const diffHours = contractHours > 0 ? Math.round((workedHours - contractHours) * 100) / 100 : null;
       const paymentStatus = normalizeAttendancePaymentStatus(sortedEntries[0]?.paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
       prevWeekBalances[uid] = {
         diffHours,
@@ -3313,7 +3310,7 @@ function renderAttendanceTable() {
     let carryOverHtml = '';
     const prevBal = prevWeekBalances[employee.id];
     if (prevBal && prevBal.diffHours !== null && prevBal.diffHours !== 0 && prevBal.paymentStatus !== ATTENDANCE_PAYMENT_STATUS.PAID) {
-      const hrsStr = fmtHrsShort(prevBal.diffHours);
+      const hrsStr = fmtHrsShort(Math.abs(prevBal.diffHours));
       if (prevBal.diffHours > 0) {
         carryOverHtml = `<span class="att-carry-over att-carry-over-positive">+${hrsStr}h non pagate</span>`;
       } else {
