@@ -381,7 +381,7 @@ function generateEmployeeDatabaseId(data = {}, fallback = '') {
   const fullName = [data.name, data.surname].map(normalizeName).filter(Boolean).join(' ');
   const emailPart = normalizeEmail(data.email || '').split('@')[0] || '';
   const base = slugifyEmployeeIdPart(fullName || data.name || emailPart || fallback);
-  return base ? `emp-${base}` : normalizeName(fallback);
+  return base ? `emp-${base}` : '';
 }
 
 function resolveEmployeeDatabaseId(data = {}, fallback = '') {
@@ -398,6 +398,16 @@ function buildAttendanceEmployeeAliases(employee = {}) {
     normalizeName(employee.authUid || ''),
     normalizeName(employee.name || '')
   ].filter(Boolean))];
+}
+
+function buildAttendanceEmployeeLookup(employees = getAllAttendanceEmployees()) {
+  const lookup = new Map();
+  employees.forEach(employee => {
+    buildAttendanceEmployeeAliases(employee).forEach(alias => {
+      if (!lookup.has(alias)) lookup.set(alias, employee);
+    });
+  });
+  return lookup;
 }
 
 function getAllAttendanceEmployees() {
@@ -431,13 +441,19 @@ function getAllAttendanceEmployees() {
   return canonicalEmployees;
 }
 
-function findAttendanceEmployeeByAlias(rawId = '', rawName = '') {
+function findAttendanceEmployeeByAlias(rawId = '', rawName = '', lookup = buildAttendanceEmployeeLookup()) {
   const idValue = normalizeName(rawId);
   const nameValue = normalizeName(rawName);
-  return getAllAttendanceEmployees().find(employee => {
-    const aliases = buildAttendanceEmployeeAliases(employee);
-    return (idValue && aliases.includes(idValue)) || (nameValue && aliases.includes(nameValue));
-  }) || null;
+  return (idValue && lookup.get(idValue)) || (nameValue && lookup.get(nameValue)) || null;
+}
+
+function shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, canonicalEmployeeId) {
+  if (!existingRecord) return true;
+  const existingEmployeeId = normalizeName(String(existingRecord.employeeId || existingRecord.uid || ''));
+  const nextEmployeeId = normalizeName(String(rawEmployeeId || ''));
+  if (existingEmployeeId === canonicalEmployeeId) return false;
+  if (nextEmployeeId === canonicalEmployeeId) return true;
+  return false;
 }
 
 function resolveCurrentEmployeeAttendanceId() {
@@ -449,7 +465,7 @@ function resolveCurrentEmployeeAttendanceId() {
     currentUserEmployeeId = ownEmployee.id;
     return currentUserEmployeeId;
   }
-  currentUserEmployeeId = resolveEmployeeDatabaseId({ name: currentUserName, email: currentUser }, currentUserUid);
+  currentUserEmployeeId = resolveEmployeeDatabaseId({ name: currentUserName, email: currentUser }, currentUserUid) || normalizeName(currentUserUid);
   return currentUserEmployeeId;
 }
 
@@ -2265,7 +2281,7 @@ function getAttendanceEmployees() {
   const ownEmployee = getAllAttendanceEmployees().find(employee => employee.id === currentEmployeeId || employee.authUid === currentUserUid);
   if (ownEmployee) return [ownEmployee];
   return [{
-    id: currentEmployeeId || resolveEmployeeDatabaseId({ name: currentUserName, email: currentUser }, currentUserUid),
+    id: currentEmployeeId || resolveEmployeeDatabaseId({ name: currentUserName, email: currentUser }, currentUserUid) || currentUserUid,
     authUid: currentUserUid,
     name: currentUserName || deriveNameFromEmail(currentUser) || currentUserUid
   }];
@@ -2483,6 +2499,7 @@ async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDat
   const weekStart = weekDates?.[0]?.date || '';
   const weekEnd = weekDates?.[6]?.date || weekStart;
   const currentEmployeeId = resolveCurrentEmployeeAttendanceId();
+  const attendanceLookup = buildAttendanceEmployeeLookup();
   if (!weekStart) return { weekStart: '', weekData: {} };
   const weekData = {};
   const weekQuery = getAttendanceWeekQuery(weekDates);
@@ -2496,14 +2513,14 @@ async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDat
       const isWeekDate = date >= weekStart && date <= weekEnd;
       if (!isWeekDate) return false;
       if (canViewAllAttendance()) return true;
-      const employee = findAttendanceEmployeeByAlias(entry?.employeeId || entry?.uid || '', entry?.employeeName || '');
+      const employee = findAttendanceEmployeeByAlias(entry?.employeeId || entry?.uid || '', entry?.employeeName || '', attendanceLookup);
       const entryEmployeeId = normalizeName(employee?.id || entry?.employeeId || entry?.uid || '');
       return Boolean(currentEmployeeId) && entryEmployeeId === currentEmployeeId;
     });
   console.log("CARICO ENTRATA USCITA", records);
   records.forEach(record => {
     const date = String(record?.date || '');
-    const employee = findAttendanceEmployeeByAlias(record?.employeeId || record?.uid || '', record?.employeeName || '');
+    const employee = findAttendanceEmployeeByAlias(record?.employeeId || record?.uid || '', record?.employeeName || '', attendanceLookup);
     const uid = String(employee?.id || record?.employeeId || record?.uid || '');
     if (!date || !uid) return;
     if (!weekData[date]) weekData[date] = {};
@@ -2515,7 +2532,7 @@ async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDat
       employeeName: employee?.name || record?.employeeName || ''
     });
     const rawEmployeeId = normalizeName(String(record?.employeeId || record?.uid || ''));
-    if (!existingRecord || rawEmployeeId === uid) weekData[date][uid] = normalizedRecord;
+    if (shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, uid)) weekData[date][uid] = normalizedRecord;
   });
   return { weekStart, weekData };
 }
@@ -2529,6 +2546,7 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   }
   let dayQuery;
   const currentEmployeeId = resolveCurrentEmployeeAttendanceId();
+  const attendanceLookup = buildAttendanceEmployeeLookup();
   if (canViewAllAttendance()) {
     dayQuery = query(timeEntryCollection(), where('date', '==', date));
   } else {
@@ -2543,7 +2561,7 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   daySnap.docs.forEach(d => {
     const record = d.data() || {};
     if (String(record.date || '') !== date) return;
-    const employee = findAttendanceEmployeeByAlias(record.employeeId || record.uid || '', record.employeeName || '');
+    const employee = findAttendanceEmployeeByAlias(record.employeeId || record.uid || '', record.employeeName || '', attendanceLookup);
     const uid = String(employee?.id || record.employeeId || record.uid || '');
     if (!uid) return;
     const existingRecord = dayData[uid];
@@ -2554,7 +2572,7 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
       employeeName: employee?.name || record.employeeName || ''
     });
     const rawEmployeeId = normalizeName(String(record.employeeId || record.uid || ''));
-    if (!existingRecord || rawEmployeeId === uid) dayData[uid] = normalizedRecord;
+    if (shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, uid)) dayData[uid] = normalizedRecord;
   });
   if (Object.keys(dayData).length) {
     if (attendanceLoadedWeekStart === weekStart) {
