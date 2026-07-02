@@ -92,6 +92,25 @@ service cloud.firestore {
       return resource.data.uid == request.auth.uid;
     }
 
+    function isTimeEntryManager() {
+      return canManageShifts() || isUserManagerAdminOrResponsible();
+    }
+
+    match /timeEntries/{entryId} {
+      allow read: if signedIn() && employeeEnabled() &&
+        (isTimeEntryManager() || resource.data.employeeId == request.auth.uid);
+      allow create, update: if signedIn() && employeeEnabled() && isTimeEntryManager() &&
+        request.resource.data.date is string &&
+        request.resource.data.employeeId is string &&
+        request.resource.data.employeeName is string &&
+        request.resource.data.oreContratto is number &&
+        request.resource.data.entrata is string &&
+        request.resource.data.uscita is string &&
+        request.resource.data.oreCalcolate is number &&
+        request.resource.data.updatedAt is string;
+      allow delete: if signedIn() && employeeEnabled() && isTimeEntryManager();
+    }
+
     // Users collection - strict RBAC access control
     match /restaurants/angies/users/{uid} {
       // User can read their own document; admin or manager (via employees) can read all
