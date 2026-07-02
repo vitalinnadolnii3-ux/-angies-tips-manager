@@ -2220,6 +2220,48 @@ function normalizeAttendanceRawText(rawText) {
     .join('\n');
 }
 
+// Converts shorthand formats to the canonical multi-line "LABEL HH:MM" format.
+// Supported inputs (single-line):
+//   "10/17"           → "X 10:00\nY 17:00"
+//   "10:30/17:00"     → "X 10:30\nY 17:00"
+//   "10/14/15/19"     → "X1 10:00\nY1 14:00\nX2 15:00\nY2 19:00"
+//   "X 10:00 Y 17:00" → "X 10:00\nY 17:00"
+// Multi-line inputs and "R" are returned unchanged.
+// If the input is a single line that does not match any supported shorthand, it is
+// returned unchanged so that parseAttendanceRawText can report the appropriate error.
+function preprocessAttendanceLines(normalized) {
+  if (!normalized) return normalized;
+  const lines = normalized.split('\n');
+  if (lines.length > 1) return normalized;
+  const single = lines[0].trim();
+  if (/^R$/i.test(single)) return 'R';
+  // Slash format: 2 or 4 slash-separated time tokens (no label prefix)
+  // e.g. "10/17", "10:30/17:00", "10/14/15/19"
+  const slashParts = single.split('/');
+  if (slashParts.length === 2 || slashParts.length === 4) {
+    const isAllTimeLike = slashParts.every(p => /^\s*\d{1,2}(?::\d{2})?\s*$/.test(p));
+    if (isAllTimeLike) {
+      const times = slashParts.map(p => normalizeAttendanceTime(p.trim()));
+      if (times.every(t => t)) {
+        if (times.length === 2) return `X ${times[0]}\nY ${times[1]}`;
+        return `X1 ${times[0]}\nY1 ${times[1]}\nX2 ${times[2]}\nY2 ${times[3]}`;
+      }
+    }
+  }
+  // Single-line label format: "X 10:00 Y 17:00" or "X1 10:00 Y1 14:00 X2 15:00 Y2 19:00"
+  const labelTimeRe = /(X1|Y1|X2|Y2|X|Y)\s+(\d{1,2}(?::\d{2})?)/gi;
+  const matches = [...single.matchAll(labelTimeRe)];
+  if (matches.length >= 2) {
+    const result = matches.map(m => {
+      const label = m[1].toUpperCase();
+      const time = normalizeAttendanceTime(m[2]);
+      return time ? `${label} ${time}` : null;
+    }).filter(Boolean);
+    if (result.length >= 2) return result.join('\n');
+  }
+  return normalized;
+}
+
 function parseAttendanceRawText(rawText) {
   const normalized = normalizeAttendanceRawText(rawText);
   if (!normalized) {
@@ -2232,7 +2274,8 @@ function parseAttendanceRawText(rawText) {
       isRestDay: false
     };
   }
-  const lines = normalized.split('\n');
+  const preprocessed = preprocessAttendanceLines(normalized);
+  const lines = preprocessed.split('\n');
   if (lines.length === 1 && /^R$/i.test(lines[0])) {
     return {
       rawText: 'R',
@@ -2249,7 +2292,7 @@ function parseAttendanceRawText(rawText) {
   let exitTime2 = '';
   for (const line of lines) {
     const match = line.match(/^(X1|Y1|X2|Y2|X|Y)\s+(\d{1,2}:\d{2})$/i);
-    if (!match) throw new Error('Formato non valido. Usa X/Y, X1/Y1/X2/Y2 oppure R.');
+    if (!match) throw new Error('Formato non valido. Usa es. 10/17, 10/14/15/19, X 10:00 Y 17:00 oppure R.');
     const label = match[1].toUpperCase();
     const time = normalizeAttendanceTime(match[2]);
     if (!time) throw new Error(`Orario non valido nella riga "${line}".`);
@@ -2690,6 +2733,12 @@ async function flushAttendanceInlineSave(input) {
   return saveAttendanceInlineCell(input, { force: true });
 }
 
+async function flushAllAttendanceInlineSaves() {
+  const inputs = [...document.querySelectorAll('#attendanceTable .att-orario-inline')];
+  if (!inputs.length) return;
+  await Promise.all(inputs.map(input => flushAttendanceInlineSave(input)));
+}
+
 function isNewDayPageActiveForDate(date) {
   return document.querySelector('.page.active')?.id === 'newday' && $('date')?.value === date;
 }
@@ -2875,7 +2924,7 @@ function renderAttendanceTable() {
       const cellClass = isRest ? 'att-orario-cell att-rest-cell' : (hasTimes ? 'att-orario-cell att-filled-cell' : 'att-orario-cell att-empty-cell');
       const orarioAttr = esc(orarioText).replace(/\n/g, '&#10;');
       if (canEdit) {
-        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="X 10:00&#10;Y 17:00">${esc(orarioText)}</textarea></td>`;
+        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="10/17 o R">${esc(orarioText)}</textarea></td>`;
       } else {
         html += `<td class="${cellClass}">${orarioHtml}</td>`;
       }
@@ -2952,6 +3001,18 @@ function renderAttendanceTable() {
       input.addEventListener('blur', async () => {
         await flushAttendanceInlineSave(input);
         attendanceInlineEditingKey = '';
+      });
+      // iOS Safari: 'change' fires reliably after the user leaves the field when the
+      // value has changed. We clear any pending debounce timer and attempt a save
+      // without force so the deduplication check (rawText === initialValue) can skip
+      // the write if 'blur' already completed the save moments earlier.
+      input.addEventListener('change', async () => {
+        const uid = input.getAttribute('data-att-uid') || '';
+        const date = input.getAttribute('data-att-date') || '';
+        const key = getAttendanceInlineCellKey(uid, date);
+        clearTimeout(attendanceInlineSaveTimers.get(key));
+        attendanceInlineSaveTimers.delete(key);
+        await saveAttendanceInlineCell(input);
       });
       input.addEventListener('dblclick', async () => {
         const uid = input.getAttribute('data-att-uid');
@@ -3615,6 +3676,7 @@ async function tab(id, b) {
     return;
   }
   if (previousTab === 'attendance' && id !== 'attendance') {
+    await flushAllAttendanceInlineSaves();
     const saved = await persistAttendanceEditorIfDirty();
     if (!saved) return;
   }
@@ -4181,6 +4243,17 @@ function num(n) {
 function fmt(d) {
   return new Date(d + 'T00:00:00').toLocaleDateString('it-IT');
 }
+
+// Flush pending attendance inline saves when the page/app goes to background.
+// Handles mobile Safari's pagehide and the standard visibilitychange event.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') {
+    void flushAllAttendanceInlineSaves();
+  }
+});
+window.addEventListener('pagehide', () => {
+  void flushAllAttendanceInlineSaves();
+});
 
 // START APP
 window.addEventListener('load', async () => {
