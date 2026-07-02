@@ -39,6 +39,7 @@ let todayShiftPopupShown = false;
 let attendanceWeekOffset = 0;
 let attendanceWeekEntries = {};
 let contractHoursData = {};
+let prevWeekBalances = {}; // { [uid]: { diffHours, paymentStatus, contractHours, workedHours } }
 let editingAttendanceUid = '';
 let editingAttendanceDate = '';
 let attendanceEditorDirty = false;
@@ -1233,6 +1234,7 @@ async function logout() {
   attendanceWeekOffset = 0;
   resetAttendanceLocalEntries();
   contractHoursData = {};
+  prevWeekBalances = {};
   $('who').textContent = 'Online';
   stopChatListener();
   stopShiftListeners();
@@ -3071,9 +3073,72 @@ async function syncNewDayHoursForAttendanceDate(date) {
   }
 }
 
+function fmtHrsShort(h) {
+  const n = h;
+  if (n === Math.floor(n)) return String(Math.floor(n));
+  return n.toFixed(2).replace('.', ',').replace(/,?0+$/, '');
+}
+
+async function loadPrevWeekBalances(weekDates) {
+  prevWeekBalances = {};
+  if (!weekDates?.length || !canViewAllAttendance()) return;
+  const weekStart = weekDates[0]?.date || '';
+  if (!weekStart) return;
+  const prevStartDate = new Date(weekStart + 'T00:00:00Z');
+  prevStartDate.setDate(prevStartDate.getDate() - 7);
+  const prevWeekStart = prevStartDate.toISOString().slice(0, 10);
+  const prevEndDate = new Date(weekStart + 'T00:00:00Z');
+  prevEndDate.setDate(prevEndDate.getDate() - 1);
+  const prevWeekEnd = prevEndDate.toISOString().slice(0, 10);
+  try {
+    const q = query(
+      timeEntryCollection(),
+      where('date', '>=', prevWeekStart),
+      where('date', '<=', prevWeekEnd)
+    );
+    const snap = await getDocs(q);
+    const employeeTotals = {};
+    snap.docs.forEach(d => {
+      const record = d.data();
+      const uid = String(record.employeeId || record.uid || '');
+      if (!uid) return;
+      if (!employeeTotals[uid]) {
+        employeeTotals[uid] = { workedMinutes: 0, entries: [] };
+      }
+      employeeTotals[uid].workedMinutes += calcEntryWorkedMinutes(record);
+      employeeTotals[uid].entries.push({
+        paymentStatus: String(record.paymentStatus || ''),
+        updatedAt: String(record.updatedAt || ''),
+        date: String(record.date || ''),
+        oreContratto: Number(record.oreContratto || 0)
+      });
+    });
+    Object.entries(employeeTotals).forEach(([uid, data]) => {
+      const sortedEntries = [...data.entries].sort((a, b) => {
+        if (a.updatedAt && b.updatedAt && a.updatedAt !== b.updatedAt) return b.updatedAt.localeCompare(a.updatedAt);
+        return b.date.localeCompare(a.date);
+      });
+      const contractHours = sortedEntries[0]?.oreContratto || 0;
+      const workedHours = data.workedMinutes / 60;
+      const diffHours = contractHours > 0 ? Math.round((workedHours - contractHours) * 100) / 100 : null;
+      const paymentStatus = normalizeAttendancePaymentStatus(sortedEntries[0]?.paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
+      prevWeekBalances[uid] = {
+        diffHours,
+        paymentStatus,
+        contractHours,
+        workedHours: Math.round(workedHours * 100) / 100
+      };
+    });
+    console.log('[WeeklyBalance] Saldi settimana precedente caricati:', prevWeekStart, '→', prevWeekEnd, '| dipendenti:', Object.keys(prevWeekBalances).length);
+  } catch (e) {
+    console.warn('[WeeklyBalance] Impossibile caricare saldo settimana precedente:', e);
+  }
+}
+
 async function refreshAttendanceState(weekDates = getCurrentAttendanceWeekDates(), successMessage = null) {
   const { weekStart, weekData } = await readAttendanceWeekEntries(weekDates);
   applyAttendanceWeekEntries(weekStart, weekData);
+  await loadPrevWeekBalances(weekDates);
   const defaultMessage = canManageAttendance() ? '' : 'Visualizzi solo la tua entrata e uscita.';
   if (successMessage != null) setAttendanceStatus(successMessage, 'info');
   else if (defaultMessage) setAttendanceStatus(defaultMessage, 'info');
@@ -3242,7 +3307,17 @@ function renderAttendanceTable() {
     const contractHours = Number(contractHoursData?.[employee.id] || 0);
     let totalWorkedMinutes = 0;
     html += `<tr data-att-row-uid="${esc(employee.id)}">`;
-    html += `<td class="shift-employee-cell">${esc(employee.name)}</td>`;
+    let carryOverHtml = '';
+    const prevBal = prevWeekBalances[employee.id];
+    if (prevBal && prevBal.diffHours !== null && prevBal.diffHours !== 0 && prevBal.paymentStatus !== ATTENDANCE_PAYMENT_STATUS.PAID) {
+      const hrsStr = fmtHrsShort(Math.abs(prevBal.diffHours));
+      if (prevBal.diffHours > 0) {
+        carryOverHtml = `<span class="att-carry-over att-carry-over-positive">+${hrsStr}h non pagate</span>`;
+      } else {
+        carryOverHtml = `<span class="att-carry-over att-carry-over-negative">-${hrsStr}h da recuperare</span>`;
+      }
+    }
+    html += `<td class="shift-employee-cell">${esc(employee.name)}${carryOverHtml}</td>`;
     if (canEdit) {
       html += `<td class="att-contract-cell"><input class="att-contract-input" type="number" min="0" max="168" step="0.5" value="${contractHours || ''}" placeholder="0" data-att-contract-uid="${esc(employee.id)}"></td>`;
     } else {
@@ -3385,6 +3460,7 @@ async function attachAttendanceListeners() {
     resetAttendanceLocalEntries();
     attendanceLoadedWeekStart = '';
     contractHoursData = {};
+    prevWeekBalances = {};
     setAttendanceStatus('');
     renderAttendance();
     return;
