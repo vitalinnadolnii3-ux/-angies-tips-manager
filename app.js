@@ -2343,6 +2343,26 @@ function getAttendancePaymentLabel(status) {
   return normalizeAttendancePaymentStatus(status) === ATTENDANCE_PAYMENT_STATUS.PAID ? 'Pagato' : 'Non pagato';
 }
 
+function getAttendanceEmployeeWeekPaymentStatus(uid, weekDates = getCurrentAttendanceWeekDates()) {
+  if (!uid) return ATTENDANCE_PAYMENT_STATUS.UNPAID;
+  const records = [];
+  weekDates.forEach(day => {
+    const date = String(day?.date || '');
+    if (!date) return;
+    const entry = (attendanceWeekEntries?.[date] || {})[uid] || null;
+    if (!entry) return;
+    records.push({ date, entry });
+  });
+  if (!records.length) return ATTENDANCE_PAYMENT_STATUS.UNPAID;
+  records.sort((a, b) => {
+    const updatedA = String(a?.entry?.updatedAt || '');
+    const updatedB = String(b?.entry?.updatedAt || '');
+    if (updatedA && updatedB && updatedA !== updatedB) return updatedB.localeCompare(updatedA);
+    return String(b.date || '').localeCompare(String(a.date || ''));
+  });
+  return getAttendancePaymentStatus(records[0].entry);
+}
+
 function buildAttendanceRawText({ entryTime1 = '', exitTime1 = '', entryTime2 = '', exitTime2 = '', isRestDay = false } = {}) {
   if (isRestDay) return 'R';
   const lines = [];
@@ -2843,7 +2863,9 @@ async function saveAttendanceFromRawText(uid, date, rawText, options = {}) {
   const existingRecord = (attendanceWeekEntries?.[date] || {})[uid] || null;
   const employee = getAttendanceEmployees().find(e => e.id === uid);
   const employeeName = employee?.name || existingRecord?.employeeName || '';
-  const paymentStatus = getAttendancePaymentStatus(existingRecord);
+  const paymentStatus = existingRecord
+    ? getAttendancePaymentStatus(existingRecord)
+    : getAttendanceEmployeeWeekPaymentStatus(uid, getWeekDatesForDate(date));
   const record = buildAttendanceRecord({
     uid,
     employeeName,
@@ -2892,6 +2914,76 @@ async function saveAttendancePaymentStatus(uid, date, paymentStatus, options = {
   return saved;
 }
 
+async function saveAttendancePaymentStatusForEmployeeWeek(uid, paymentStatus, options = {}) {
+  const { silentSuccess = true, reloadAfterSave = true } = options;
+  if (!uid) return false;
+  if (!canManageAttendancePaymentStatus()) {
+    setAttendanceStatus('Solo admin o responsabile possono cambiare lo stato pagamento.', 'error');
+    return false;
+  }
+  const weekDates = getCurrentAttendanceWeekDates();
+  const weekStart = weekDates?.[0]?.date || '';
+  if (!weekStart) return false;
+  const normalizedStatus = normalizeAttendancePaymentStatus(paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
+  const existingEntries = weekDates
+    .map(day => {
+      const date = String(day?.date || '');
+      if (!date) return null;
+      const entry = (attendanceWeekEntries?.[date] || {})[uid] || null;
+      if (!entry) return null;
+      return { date, entry };
+    })
+    .filter(Boolean);
+  let currentWeekStatus = ATTENDANCE_PAYMENT_STATUS.UNPAID;
+  if (existingEntries.length) {
+    const latestEntry = [...existingEntries].sort((a, b) => {
+      const updatedA = String(a?.entry?.updatedAt || '');
+      const updatedB = String(b?.entry?.updatedAt || '');
+      if (updatedA && updatedB && updatedA !== updatedB) return updatedB.localeCompare(updatedA);
+      return String(b?.date || '').localeCompare(String(a?.date || ''));
+    })[0];
+    currentWeekStatus = getAttendancePaymentStatus(latestEntry?.entry || null);
+  }
+  if (existingEntries.length && currentWeekStatus === normalizedStatus) {
+    if (reloadAfterSave) await reloadAttendanceAfterMutation(weekStart, 'Stato pagamento aggiornato e ricaricato.');
+    return true;
+  }
+  const employee = getAttendanceEmployees().find(e => e.id === uid);
+  const successMessage = normalizedStatus === ATTENDANCE_PAYMENT_STATUS.PAID
+    ? 'Turno segnato come pagato.'
+    : 'Turno segnato come non pagato.';
+  const fallbackDate = weekDates.find(day => String(day?.date || '') === today())?.date || weekStart;
+  const writes = existingEntries.length ? existingEntries : [{
+    date: fallbackDate,
+    entry: {
+      uid,
+      employeeId: uid,
+      employeeName: employee?.name || '',
+      date: fallbackDate,
+      weekStart: getWeekStartISO(fallbackDate)
+    }
+  }];
+  for (const item of writes) {
+    const saveDate = String(item?.date || weekStart);
+    const payload = normalizeAttendanceRecord({
+      ...(item?.entry || {}),
+      uid,
+      employeeId: uid,
+      employeeName: item?.entry?.employeeName || employee?.name || '',
+      date: saveDate,
+      weekStart: getWeekStartISO(saveDate),
+      paymentStatus: normalizedStatus
+    }, { uid, date: saveDate, weekStart: getWeekStartISO(saveDate), employeeName: employee?.name || item?.entry?.employeeName || '' });
+    const saved = await persistAttendanceRecord(saveDate, uid, payload, { silentSuccess: true, successMessage });
+    if (!saved) return false;
+  }
+  if (!silentSuccess) setAttendanceStatus(successMessage, 'info');
+  else setAttendanceStatus('');
+  const reloadDate = String(writes[0]?.date || weekStart);
+  if (reloadAfterSave) await reloadAttendanceAfterMutation(reloadDate, 'Stato pagamento aggiornato e ricaricato.');
+  return true;
+}
+
 async function saveAttendanceInlineCell(input, { force = false } = {}) {
   if (!input) return false;
   const uid = input.getAttribute('data-att-uid') || '';
@@ -2923,18 +3015,18 @@ async function saveAttendanceInlineCell(input, { force = false } = {}) {
 async function saveAttendancePaymentInline(select) {
   if (!select) return false;
   const uid = select.getAttribute('data-att-pay-uid') || '';
-  const date = select.getAttribute('data-att-pay-date') || '';
-  if (!uid || !date) return false;
+  if (!uid) return false;
   const previousStatus = normalizeAttendancePaymentStatus(select.dataset.initialStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
   const nextStatus = normalizeAttendancePaymentStatus(select.value, ATTENDANCE_PAYMENT_STATUS.UNPAID);
   if (nextStatus === previousStatus) return true;
-  const saved = await saveAttendancePaymentStatus(uid, date, nextStatus, { silentSuccess: true, reloadAfterSave: false });
+  const saved = await saveAttendancePaymentStatusForEmployeeWeek(uid, nextStatus, { silentSuccess: true, reloadAfterSave: false });
   if (!saved) {
     select.value = previousStatus;
     return false;
   }
   select.dataset.initialStatus = nextStatus;
-  await syncNewDayHoursForAttendanceDate(date);
+  const activeDate = String($('date')?.value || '');
+  if (activeDate) await syncNewDayHoursForAttendanceDate(activeDate);
   return true;
 }
 
@@ -3113,6 +3205,10 @@ function renderAttendanceTable() {
   if (!table) return;
   const employees = getAttendanceEmployees();
   const weekDates = getCurrentAttendanceWeekDates();
+  // Dipendente, Ore contratt., Ore fatte, Diff. ore, Stato
+  const attendanceFixedColumns = 5;
+  // Ogni giorno ha 2 colonne: Orario e #Ore
+  const attendanceColumnsPerDay = 2;
   const canEdit = canManageAttendance();
   const weekStart = weekDates?.[0]?.date || '';
   console.log('[Attendance] RENDER tabella - weekStart:', weekStart, '| weekEntries keys:', Object.keys(attendanceWeekEntries || {}));
@@ -3126,6 +3222,7 @@ function renderAttendanceTable() {
   });
   html += '<th class="att-total-header" rowspan="2">Ore<br>fatte</th>';
   html += '<th class="att-diff-header" rowspan="2">Diff.<br>ore</th>';
+  html += '<th class="att-status-header" rowspan="2">Stato</th>';
   html += '</tr>';
   html += '<tr>';
   weekDates.forEach(() => {
@@ -3136,7 +3233,7 @@ function renderAttendanceTable() {
   // Body
   html += '<tbody>';
   if (!employees.length) {
-    html += `<tr><td colspan="${4 + weekDates.length * 2}">Nessun dipendente disponibile.</td></tr>`;
+    html += `<tr><td colspan="${attendanceFixedColumns + weekDates.length * attendanceColumnsPerDay}">Nessun dipendente disponibile.</td></tr>`;
     html += '</tbody>';
     table.innerHTML = html;
     return;
@@ -3155,8 +3252,6 @@ function renderAttendanceTable() {
       const entry = (attendanceWeekEntries?.[day.date] || {})[employee.id] || null;
       if (entry) console.log('[Attendance] RENDER entry', employee.id, day.date, '→ workedHours:', entry.workedHours, 'orario:', formatAttendanceOrario(entry));
       const orarioText = formatAttendanceOrario(entry);
-      const paymentStatus = getAttendancePaymentStatus(entry);
-      const paymentLabel = getAttendancePaymentLabel(paymentStatus);
       const workedMinutes = calcEntryWorkedMinutes(entry);
       totalWorkedMinutes += workedMinutes;
       const orarioHtml = orarioText ? esc(orarioText).replace(/\n/g, '<br>') : '';
@@ -3164,12 +3259,10 @@ function renderAttendanceTable() {
       const hasTimes = orarioText && !isRest;
       const cellClass = isRest ? 'att-orario-cell att-rest-cell' : (hasTimes ? 'att-orario-cell att-filled-cell' : 'att-orario-cell att-empty-cell');
       const orarioAttr = esc(orarioText).replace(/\n/g, '&#10;');
-      const paymentBadgeClass = paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID ? 'att-payment-badge att-payment-paid' : 'att-payment-badge att-payment-unpaid';
       if (canEdit) {
-        const paymentDisabled = canManageAttendancePaymentStatus() ? '' : ' disabled';
-        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="10/17 o R">${esc(orarioText)}</textarea><label class="att-payment-control"><span class="att-payment-label">Stato:</span><select class="att-payment-select" data-att-pay-uid="${esc(employee.id)}" data-att-pay-date="${esc(day.date)}" data-initial-status="${esc(paymentStatus)}"${paymentDisabled}><option value="unpaid"${paymentStatus === ATTENDANCE_PAYMENT_STATUS.UNPAID ? ' selected' : ''}>Non pagato</option><option value="paid"${paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID ? ' selected' : ''}>Pagato</option></select></label></td>`;
+        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="10/17 o R">${esc(orarioText)}</textarea></td>`;
       } else {
-        html += `<td class="${cellClass}">${orarioHtml}<div class="${paymentBadgeClass}">${esc(paymentLabel)}</div></td>`;
+        html += `<td class="${cellClass}">${orarioHtml}</td>`;
       }
       let oreDisplay;
       if (isRest) {
@@ -3186,8 +3279,17 @@ function renderAttendanceTable() {
     const diffHours = contractHours > 0 ? totalHoursNum - contractHours : null;
     const diffDisplay = diffHours !== null ? `${diffHours >= 0 ? '+' : ''}${num(diffHours)} h` : '-';
     const diffClass = diffHours === null ? '' : (diffHours > 0 ? 'att-diff-positive' : diffHours < 0 ? 'att-diff-negative' : 'att-diff-zero');
+    const paymentStatus = getAttendanceEmployeeWeekPaymentStatus(employee.id, weekDates);
+    const paymentLabel = getAttendancePaymentLabel(paymentStatus);
+    const paymentBadgeClass = paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID ? 'att-payment-badge att-payment-paid' : 'att-payment-badge att-payment-unpaid';
     html += `<td class="att-total-cell" data-att-total-cell="true">${oreFatteDisplay}</td>`;
     html += `<td class="att-diff-cell ${diffClass}" data-att-diff-cell="true">${diffDisplay}</td>`;
+    if (canEdit) {
+      const paymentDisabled = canManageAttendancePaymentStatus() ? '' : ' disabled';
+      html += `<td class="att-status-cell"><select class="att-payment-select att-payment-row-select" data-att-pay-uid="${esc(employee.id)}" data-initial-status="${esc(paymentStatus)}"${paymentDisabled}><option value="unpaid"${paymentStatus === ATTENDANCE_PAYMENT_STATUS.UNPAID ? ' selected' : ''}>Non pagato</option><option value="paid"${paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID ? ' selected' : ''}>Pagato</option></select></td>`;
+    } else {
+      html += `<td class="att-status-cell"><span class="${paymentBadgeClass}">${esc(paymentLabel)}</span></td>`;
+    }
     html += '</tr>';
   });
   html += '</tbody>';
@@ -3265,7 +3367,7 @@ function renderAttendanceTable() {
         openAttendanceEditor(uid, date);
       });
     });
-    table.querySelectorAll('.att-payment-select').forEach(select => {
+    table.querySelectorAll('.att-payment-row-select').forEach(select => {
       select.addEventListener('change', async () => {
         await saveAttendancePaymentInline(select);
       });
