@@ -85,6 +85,10 @@ const ROLE_STORAGE_VALUES = ['admin', 'manager', 'responsible', 'waiter', 'kitch
 const MAX_TIP_AMOUNT = 100000;
 const MAX_WEEKLY_HOURS = 168; // 7 days × 24 hours
 const CONTRACT_HOURS_DEBOUNCE_MS = 250;
+const ATTENDANCE_PAYMENT_STATUS = {
+  PAID: 'paid',
+  UNPAID: 'unpaid'
+};
 const BOOTSTRAP_ADMIN_EMAILS = ['vitalinnadolnii3@gmail.com'];
 const BOOTSTRAP_ADMIN_DEFAULT_NAMES = { 'vitalinnadolnii3@gmail.com': 'Vitalin' };
 const sectionLoaded = {
@@ -119,6 +123,7 @@ const isWaiter = () => currentUserRole.toLowerCase() === 'waiter';
 const canViewGlobalTipsData = () => isAdmin() || isManager() || isResponsible();
 const canManageShifts = () => isAdmin() || isManager() || isResponsible();
 const canManageAttendance = () => isAdmin() || isManager() || isResponsible();
+const canManageAttendancePaymentStatus = () => isAdmin() || isResponsible();
 const canViewAllAttendance = () => canManageAttendance();
 const canManageUsers = () => isAdmin();
 const canViewAllData = () => isAdmin() || isManager();
@@ -2323,6 +2328,21 @@ function normalizeAttendanceTime(value) {
   return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
 }
 
+function normalizeAttendancePaymentStatus(value, fallback = ATTENDANCE_PAYMENT_STATUS.UNPAID) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['paid', 'pagato'].includes(normalized)) return ATTENDANCE_PAYMENT_STATUS.PAID;
+  if (['unpaid', 'non pagato', 'non_pagato', 'nonpagato'].includes(normalized)) return ATTENDANCE_PAYMENT_STATUS.UNPAID;
+  return fallback;
+}
+
+function getAttendancePaymentStatus(entry) {
+  return normalizeAttendancePaymentStatus(entry?.paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
+}
+
+function getAttendancePaymentLabel(status) {
+  return normalizeAttendancePaymentStatus(status) === ATTENDANCE_PAYMENT_STATUS.PAID ? 'Pagato' : 'Non pagato';
+}
+
 function buildAttendanceRawText({ entryTime1 = '', exitTime1 = '', entryTime2 = '', exitTime2 = '', isRestDay = false } = {}) {
   if (isRestDay) return 'R';
   const lines = [];
@@ -2590,7 +2610,7 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   return null;
 }
 
-function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, entryTime1, exitTime1, entryTime2, exitTime2, isRestDay, notes }) {
+function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, entryTime1, exitTime1, entryTime2, exitTime2, isRestDay, notes, paymentStatus = ATTENDANCE_PAYMENT_STATUS.UNPAID }) {
   const entryForCalc = { entryTime1, exitTime1, entryTime2, exitTime2, isRestDay };
   const workedMinutes = calcEntryWorkedMinutes(entryForCalc);
   const workedHours = Math.round((workedMinutes / 60) * 100) / 100;
@@ -2616,6 +2636,7 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
     workedMinutes,
     isRestDay,
     notes,
+    paymentStatus: normalizeAttendancePaymentStatus(paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID),
     updatedAt: new Date().toISOString(),
     updatedBy: currentUserUid
   };
@@ -2681,6 +2702,7 @@ function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = ''
     workedMinutes,
     isRestDay,
     notes: String(source.notes || ''),
+    paymentStatus: normalizeAttendancePaymentStatus(source.paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID),
     updatedAt: String(source.updatedAt || new Date().toISOString()),
     updatedBy: String(source.updatedBy || currentUserUid || '')
   };
@@ -2821,6 +2843,7 @@ async function saveAttendanceFromRawText(uid, date, rawText, options = {}) {
   const existingRecord = (attendanceWeekEntries?.[date] || {})[uid] || null;
   const employee = getAttendanceEmployees().find(e => e.id === uid);
   const employeeName = employee?.name || existingRecord?.employeeName || '';
+  const paymentStatus = getAttendancePaymentStatus(existingRecord);
   const record = buildAttendanceRecord({
     uid,
     employeeName,
@@ -2832,10 +2855,40 @@ async function saveAttendanceFromRawText(uid, date, rawText, options = {}) {
     entryTime2: parsed.entryTime2,
     exitTime2: parsed.exitTime2,
     isRestDay: parsed.isRestDay,
-    notes: typeof notes === 'string' ? notes : String(existingRecord?.notes || '')
+    notes: typeof notes === 'string' ? notes : String(existingRecord?.notes || ''),
+    paymentStatus
   });
   const saved = await persistAttendanceRecord(date, uid, record, { silentSuccess, successMessage });
   if (saved && reloadAfterSave) await reloadAttendanceAfterMutation(date, 'Entrata/uscita salvata e ricaricata.');
+  return saved;
+}
+
+async function saveAttendancePaymentStatus(uid, date, paymentStatus, options = {}) {
+  const { silentSuccess = true, reloadAfterSave = true } = options;
+  if (!uid || !date) return false;
+  if (!canManageAttendancePaymentStatus()) {
+    setAttendanceStatus('Solo admin o responsabile possono cambiare lo stato pagamento.', 'error');
+    return false;
+  }
+  const normalizedStatus = normalizeAttendancePaymentStatus(paymentStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
+  const existingRecord = (attendanceWeekEntries?.[date] || {})[uid] || null;
+  if (existingRecord && getAttendancePaymentStatus(existingRecord) === normalizedStatus) return true;
+  const weekStart = getWeekStartISO(date);
+  const employee = getAttendanceEmployees().find(e => e.id === uid);
+  const payload = normalizeAttendanceRecord({
+    ...(existingRecord || {}),
+    uid,
+    employeeId: uid,
+    employeeName: existingRecord?.employeeName || employee?.name || '',
+    date,
+    weekStart,
+    paymentStatus: normalizedStatus
+  }, { uid, date, weekStart, employeeName: employee?.name || existingRecord?.employeeName || '' });
+  const successMessage = normalizedStatus === ATTENDANCE_PAYMENT_STATUS.PAID
+    ? 'Turno segnato come pagato.'
+    : 'Turno segnato come non pagato.';
+  const saved = await persistAttendanceRecord(date, uid, payload, { silentSuccess, successMessage });
+  if (saved && reloadAfterSave) await reloadAttendanceAfterMutation(date, 'Stato pagamento aggiornato e ricaricato.');
   return saved;
 }
 
@@ -2865,6 +2918,24 @@ async function saveAttendanceInlineCell(input, { force = false } = {}) {
   } finally {
     if (attendanceInlineEditingKey === key && document.activeElement !== input) attendanceInlineEditingKey = '';
   }
+}
+
+async function saveAttendancePaymentInline(select) {
+  if (!select) return false;
+  const uid = select.getAttribute('data-att-pay-uid') || '';
+  const date = select.getAttribute('data-att-pay-date') || '';
+  if (!uid || !date) return false;
+  const previousStatus = normalizeAttendancePaymentStatus(select.dataset.initialStatus, ATTENDANCE_PAYMENT_STATUS.UNPAID);
+  const nextStatus = normalizeAttendancePaymentStatus(select.value, ATTENDANCE_PAYMENT_STATUS.UNPAID);
+  if (nextStatus === previousStatus) return true;
+  const saved = await saveAttendancePaymentStatus(uid, date, nextStatus, { silentSuccess: true, reloadAfterSave: false });
+  if (!saved) {
+    select.value = previousStatus;
+    return false;
+  }
+  select.dataset.initialStatus = nextStatus;
+  await syncNewDayHoursForAttendanceDate(date);
+  return true;
 }
 
 function scheduleAttendanceInlineSave(input) {
@@ -2981,6 +3052,7 @@ function openAttendanceEditor(uid, date) {
   if (!canManageAttendance()) return;
   const weekDates = getCurrentAttendanceWeekDates();
   const entry = (attendanceWeekEntries?.[date] || {})[uid] || null;
+  const paymentStatus = getAttendancePaymentStatus(entry);
   editingAttendanceUid = uid;
   editingAttendanceDate = date;
   if ($('attEntry1')) $('attEntry1').value = entry?.entryTime1 || '';
@@ -2989,6 +3061,10 @@ function openAttendanceEditor(uid, date) {
   if ($('attExit2')) $('attExit2').value = entry?.exitTime2 || '';
   if ($('attNotes')) $('attNotes').value = entry?.notes || '';
   if ($('attRestDay')) $('attRestDay').checked = Boolean(entry?.isRestDay);
+  if ($('attPaymentStatus')) {
+    $('attPaymentStatus').value = paymentStatus;
+    $('attPaymentStatus').disabled = !canManageAttendancePaymentStatus();
+  }
   syncAttendanceRestDayState();
   const hasEntry = Boolean(entry && (entry.entryTime1 || entry.exitTime1 || entry.isRestDay));
   if ($('attDeleteEntryBtn')) $('attDeleteEntryBtn').classList.toggle('hidden', !hasEntry);
@@ -3019,6 +3095,10 @@ function closeAttendanceEditor() {
   if ($('attExit2')) $('attExit2').value = '';
   if ($('attNotes')) $('attNotes').value = '';
   if ($('attRestDay')) $('attRestDay').checked = false;
+  if ($('attPaymentStatus')) {
+    $('attPaymentStatus').value = ATTENDANCE_PAYMENT_STATUS.UNPAID;
+    $('attPaymentStatus').disabled = !canManageAttendancePaymentStatus();
+  }
   const preview = $('attHoursPreview');
   if (preview) { preview.textContent = ''; preview.className = 'att-hours-preview hidden'; }
   syncAttendanceRestDayState();
@@ -3075,6 +3155,8 @@ function renderAttendanceTable() {
       const entry = (attendanceWeekEntries?.[day.date] || {})[employee.id] || null;
       if (entry) console.log('[Attendance] RENDER entry', employee.id, day.date, '→ workedHours:', entry.workedHours, 'orario:', formatAttendanceOrario(entry));
       const orarioText = formatAttendanceOrario(entry);
+      const paymentStatus = getAttendancePaymentStatus(entry);
+      const paymentLabel = getAttendancePaymentLabel(paymentStatus);
       const workedMinutes = calcEntryWorkedMinutes(entry);
       totalWorkedMinutes += workedMinutes;
       const orarioHtml = orarioText ? esc(orarioText).replace(/\n/g, '<br>') : '';
@@ -3082,10 +3164,12 @@ function renderAttendanceTable() {
       const hasTimes = orarioText && !isRest;
       const cellClass = isRest ? 'att-orario-cell att-rest-cell' : (hasTimes ? 'att-orario-cell att-filled-cell' : 'att-orario-cell att-empty-cell');
       const orarioAttr = esc(orarioText).replace(/\n/g, '&#10;');
+      const paymentBadgeClass = paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID ? 'att-payment-badge att-payment-paid' : 'att-payment-badge att-payment-unpaid';
       if (canEdit) {
-        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="10/17 o R">${esc(orarioText)}</textarea></td>`;
+        const paymentDisabled = canManageAttendancePaymentStatus() ? '' : ' disabled';
+        html += `<td class="${cellClass}" data-att-cell-uid="${esc(employee.id)}" data-att-cell-date="${esc(day.date)}"><textarea class="att-orario-inline" data-att-uid="${esc(employee.id)}" data-att-date="${esc(day.date)}" data-initial-value="${orarioAttr}" spellcheck="false" rows="${Math.max(2, orarioText ? orarioText.split('\n').length : 2)}" placeholder="10/17 o R">${esc(orarioText)}</textarea><label class="att-payment-control"><span class="att-payment-label">Stato:</span><select class="att-payment-select" data-att-pay-uid="${esc(employee.id)}" data-att-pay-date="${esc(day.date)}" data-initial-status="${esc(paymentStatus)}"${paymentDisabled}><option value="unpaid"${paymentStatus === ATTENDANCE_PAYMENT_STATUS.UNPAID ? ' selected' : ''}>Non pagato</option><option value="paid"${paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID ? ' selected' : ''}>Pagato</option></select></label></td>`;
       } else {
-        html += `<td class="${cellClass}">${orarioHtml}</td>`;
+        html += `<td class="${cellClass}">${orarioHtml}<div class="${paymentBadgeClass}">${esc(paymentLabel)}</div></td>`;
       }
       let oreDisplay;
       if (isRest) {
@@ -3179,6 +3263,11 @@ function renderAttendanceTable() {
         if (!uid || !date) return;
         await flushAttendanceInlineSave(input);
         openAttendanceEditor(uid, date);
+      });
+    });
+    table.querySelectorAll('.att-payment-select').forEach(select => {
+      select.addEventListener('change', async () => {
+        await saveAttendancePaymentInline(select);
       });
     });
   }
@@ -3302,6 +3391,10 @@ async function saveAttendanceEntry(options = {}) {
   const entryTime2 = isRestDay ? '' : String($('attEntry2')?.value || '').trim();
   const exitTime2 = isRestDay ? '' : String($('attExit2')?.value || '').trim();
   const notes = String($('attNotes')?.value || '').trim();
+  const existingRecord = (attendanceWeekEntries?.[date] || {})[uid] || null;
+  const paymentStatus = canManageAttendancePaymentStatus()
+    ? normalizeAttendancePaymentStatus($('attPaymentStatus')?.value, ATTENDANCE_PAYMENT_STATUS.UNPAID)
+    : getAttendancePaymentStatus(existingRecord);
   const rawText = buildAttendanceRawText({ entryTime1, exitTime1, entryTime2, exitTime2, isRestDay });
   const employee = getAttendanceEmployees().find(e => e.id === uid);
   const employeeName = employee?.name || '';
@@ -3316,7 +3409,8 @@ async function saveAttendanceEntry(options = {}) {
     entryTime2: normalizeAttendanceTime(entryTime2),
     exitTime2: normalizeAttendanceTime(exitTime2),
     isRestDay,
-    notes
+    notes,
+    paymentStatus
   });
   const saved = await persistAttendanceRecord(date, uid, record, { silentSuccess, successMessage: 'Entrata/uscita salvata.' });
   if (!saved) return false;
@@ -3764,8 +3858,11 @@ function init() {
   };
   $('attDeleteEntryBtn').onclick = deleteAttendanceEntry;
   $('attCancelEntryBtn').onclick = closeAttendanceEditor;
-  ['attEntry1', 'attExit1', 'attEntry2', 'attExit2', 'attNotes'].forEach(id => {
-    $(id).oninput = markAttendanceEditorDirty;
+  ['attEntry1', 'attExit1', 'attEntry2', 'attExit2', 'attNotes', 'attPaymentStatus'].forEach(id => {
+    const input = $(id);
+    if (!input) return;
+    input.oninput = markAttendanceEditorDirty;
+    input.onchange = markAttendanceEditorDirty;
   });
   $('attRestDay').onchange = () => {
     markAttendanceEditorDirty();
@@ -3972,12 +4069,12 @@ function hours() {
   const canonicalEmpMap = new Map(
     getAllAttendanceEmployees().map(e => [e.name.toLowerCase(), e.id])
   );
-  let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
+  let html = '<tr><th>Dipendente</th><th>Ore</th><th>Stato turno</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
   
   state.employees.forEach((n, i) => {
     // Use canonical ID (Firestore UID if available, otherwise employee name) to match attendance keys
     const empId = esc(canonicalEmpMap.get(n.toLowerCase()) || n);
-    html += `<tr data-emp-id="${empId}"><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"${canEdit ? '' : ' readonly'}></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
+    html += `<tr data-emp-id="${empId}"><td>${esc(n)}</td><td class="hour-cell"><input class="hour" type="number" step="0.5" value="0"${canEdit ? '' : ' readonly'}></td><td class="hour-payment-cell"><span class="hour-payment-badge hour-payment-unknown" data-hour-payment-status>-</span></td><td class="calc-cash"></td><td class="calc-card"></td><td class="calc-total"></td></tr>`;
   });
   $('hours').innerHTML = html;
   
@@ -4068,6 +4165,11 @@ async function populateHoursFromAttendance(date, options = {}) {
     rows.forEach(row => {
       const input = row.querySelector('.hour');
       if (input) input.value = '0';
+      const paymentBadge = row.querySelector('[data-hour-payment-status]');
+      if (paymentBadge) {
+        paymentBadge.textContent = '-';
+        paymentBadge.className = 'hour-payment-badge hour-payment-unknown';
+      }
     });
     if (!dayAttendance || typeof dayAttendance !== 'object') {
       updateHourCalculations();
@@ -4080,6 +4182,14 @@ async function populateHoursFromAttendance(date, options = {}) {
       if (!entry) return;
       const input = row.querySelector('.hour');
       if (!input) return;
+      const paymentBadge = row.querySelector('[data-hour-payment-status]');
+      const paymentStatus = getAttendancePaymentStatus(entry);
+      if (paymentBadge) {
+        paymentBadge.textContent = getAttendancePaymentLabel(paymentStatus);
+        paymentBadge.className = paymentStatus === ATTENDANCE_PAYMENT_STATUS.PAID
+          ? 'hour-payment-badge hour-payment-paid'
+          : 'hour-payment-badge hour-payment-unpaid';
+      }
       // Support both new format (workedHours) and old format (workedMinutes)
       let workedHours = 0;
       if (entry.workedHours != null) {

@@ -96,6 +96,29 @@ service cloud.firestore {
       return canManageShifts() || isUserManagerAdminOrResponsible();
     }
 
+    function isTimeEntryPaymentManager() {
+      return isAdmin() || isResponsible() || isUserAdmin() || isUserResponsible();
+    }
+
+    function normalizedPaymentStatus(data) {
+      return data.paymentStatus is string ? data.paymentStatus : 'unpaid';
+    }
+
+    function validPaymentStatus(status) {
+      return status == 'paid' || status == 'unpaid';
+    }
+
+    function timeEntryPaymentStatusIsValid() {
+      return !('paymentStatus' in request.resource.data) ||
+        (request.resource.data.paymentStatus is string && validPaymentStatus(request.resource.data.paymentStatus));
+    }
+
+    function canWriteTimeEntryPaymentStatus() {
+      let newStatus = normalizedPaymentStatus(request.resource.data);
+      let oldStatus = resource == null ? 'unpaid' : normalizedPaymentStatus(resource.data);
+      return isTimeEntryPaymentManager() || newStatus == oldStatus;
+    }
+
     function employeeProfileEmployeeKey() {
       return employeeExists() && employeeProfile().data.employeeKey is string
         ? employeeProfile().data.employeeKey
@@ -141,7 +164,9 @@ service cloud.firestore {
         request.resource.data.entrata is string &&
         request.resource.data.uscita is string &&
         request.resource.data.oreCalcolate is number &&
-        request.resource.data.updatedAt is string;
+        request.resource.data.updatedAt is string &&
+        timeEntryPaymentStatusIsValid() &&
+        canWriteTimeEntryPaymentStatus();
       allow delete: if signedIn() && employeeEnabled() && isTimeEntryManager();
     }
 
