@@ -26,6 +26,7 @@ let currentUser = '';
 let currentUserUid = '';
 let currentUserName = '';
 let currentUserRole = '';
+let currentUserEmployeeId = '';
 let hasLoadedSessionData = false;
 let employeesData = [];
 let usersData = [];
@@ -367,6 +368,106 @@ function normalizeName(s) {
   return String(s || '').trim().replace(/\s+/g, ' ');
 }
 
+function slugifyEmployeeIdPart(value) {
+  return normalizeName(value)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function generateEmployeeDatabaseId(data = {}, fallback = '') {
+  const fullName = [data.name, data.surname].map(normalizeName).filter(Boolean).join(' ');
+  const emailPart = normalizeEmail(data.email || '').split('@')[0] || '';
+  const base = slugifyEmployeeIdPart(fullName || emailPart || fallback);
+  return base ? `emp-${base}` : '';
+}
+
+function resolveEmployeeDatabaseId(data = {}, fallback = '') {
+  const explicit = normalizeName(data.employeeKey || data.employeeDbId || data.attendanceId || data.employeeId || '');
+  if (explicit) return explicit;
+  const presetName = normalizeName(data.name || fallback);
+  if (data._isPreset && presetName) return presetName;
+  return generateEmployeeDatabaseId(data, fallback);
+}
+
+function buildAttendanceEmployeeAliases(employee = {}) {
+  return [...new Set([
+    normalizeName(employee.id || ''),
+    normalizeName(employee.authUid || ''),
+    normalizeName(employee.name || '')
+  ].filter(Boolean))];
+}
+
+function buildAttendanceEmployeeLookup(employees = getAllAttendanceEmployees()) {
+  const lookup = new Map();
+  employees.forEach(employee => {
+    buildAttendanceEmployeeAliases(employee).forEach(alias => {
+      if (!lookup.has(alias)) lookup.set(alias, employee);
+    });
+  });
+  return lookup;
+}
+
+function getAllAttendanceEmployees() {
+  const canonicalEmployees = SHIFT_PRESET_EMPLOYEE_ORDER.map(name => {
+    const matchingEmployee = employeesData.find(emp =>
+      emp.enabled !== false &&
+      normalizeName(emp.name).toLowerCase() === name.toLowerCase()
+    );
+    if (matchingEmployee) {
+      return {
+        id: resolveEmployeeDatabaseId(matchingEmployee, matchingEmployee.id),
+        authUid: matchingEmployee.id,
+        name
+      };
+    }
+    return { id: name, authUid: '', name, _isPreset: true };
+  });
+  if (Array.isArray(employeesData) && employeesData.length > 0) {
+    const presetNameSet = new Set(SHIFT_PRESET_EMPLOYEE_ORDER.map(n => n.toLowerCase()));
+    employeesData
+      .filter(emp => emp.enabled !== false && !presetNameSet.has(normalizeName(emp.name).toLowerCase()))
+      .sort((a, b) => normalizeName(a.name || '').localeCompare(normalizeName(b.name || ''), 'it', { sensitivity: 'base' }))
+      .forEach(emp => {
+        canonicalEmployees.push({
+          id: resolveEmployeeDatabaseId(emp, emp.id),
+          authUid: emp.id,
+          name: normalizeName(emp.name) || normalizeEmail(emp.email) || emp.id
+        });
+      });
+  }
+  return canonicalEmployees;
+}
+
+function findAttendanceEmployeeByAlias(rawId = '', rawName = '', lookup = buildAttendanceEmployeeLookup()) {
+  const idValue = normalizeName(rawId);
+  const nameValue = normalizeName(rawName);
+  return (idValue && lookup.get(idValue)) || (nameValue && lookup.get(nameValue)) || null;
+}
+
+function shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, canonicalEmployeeId) {
+  if (!existingRecord) return true;
+  const existingEmployeeId = normalizeName(String(existingRecord.employeeId || existingRecord.uid || ''));
+  const nextEmployeeId = normalizeName(String(rawEmployeeId || ''));
+  if (existingEmployeeId === canonicalEmployeeId) return false;
+  return nextEmployeeId === canonicalEmployeeId;
+}
+
+function resolveCurrentEmployeeAttendanceId() {
+  if (!currentUserUid) return '';
+  if (currentUserEmployeeId) return currentUserEmployeeId;
+  const ownEmployee = getAllAttendanceEmployees().find(employee => employee.authUid === currentUserUid)
+    || findAttendanceEmployeeByAlias('', currentUserName);
+  if (ownEmployee?.id) {
+    currentUserEmployeeId = ownEmployee.id;
+    return currentUserEmployeeId;
+  }
+  currentUserEmployeeId = resolveEmployeeDatabaseId({ name: currentUserName, email: currentUser }, currentUserUid) || normalizeName(currentUserUid);
+  return currentUserEmployeeId;
+}
+
 function resolveUsername(name) {
   const cleaned = normalizeName(name);
   if (!cleaned) return '';
@@ -423,6 +524,7 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
   const email = normalizeEmail(user.email);
   const phone = String(profile.phone || '').trim();
   const restaurantRole = normalizeRestaurantRole(profile.restaurantRole || '');
+  const employeeKey = resolveEmployeeDatabaseId({ name, surname, email }, user.uid);
   const syncTasks = [
     {
       label: 'RTDB users',
@@ -441,6 +543,7 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
         email,
         phone,
         restaurantRole,
+        employeeKey,
         appRole: 'Admin',
         role: 'admin',
         status: 'Active',
@@ -456,6 +559,7 @@ async function ensureBootstrapAdminProfile(user, profile = {}) {
         email,
         phone,
         restaurantRole,
+        employeeKey,
         appRole: 'Admin',
         role: 'Admin',
         status: 'Active',
@@ -517,6 +621,7 @@ function timeEntryDoc(date, employeeId) {
 function getAttendanceWeekQuery(weekDates = getCurrentAttendanceWeekDates()) {
   const weekStart = weekDates?.[0]?.date || '';
   const weekEnd = weekDates?.[6]?.date || weekStart;
+  const currentEmployeeId = resolveCurrentEmployeeAttendanceId();
   if (!weekStart || !weekEnd) return null;
   if (canViewAllAttendance()) {
     return query(
@@ -525,9 +630,13 @@ function getAttendanceWeekQuery(weekDates = getCurrentAttendanceWeekDates()) {
       where('date', '<=', weekEnd)
     );
   }
+  if (!currentEmployeeId) {
+    console.warn('[Attendance] Query non costruita: employeeId corrente mancante.');
+    return null;
+  }
   return query(
     timeEntryCollection(),
-    where('employeeId', '==', currentUserUid)
+    where('employeeId', '==', currentEmployeeId)
   );
 }
 
@@ -851,6 +960,7 @@ function syncStateEmployeesFromEmployeesData() {
 function setEmployeesCache(list = []) {
   employeesData = sortEmployeesList(list);
   syncStateEmployeesFromEmployeesData();
+  if (currentUserUid) currentUserEmployeeId = '';
 }
 
 function setUsersCache(list = []) {
@@ -887,6 +997,8 @@ function buildLocalEmployeeRecord(uid, data = {}, previous = {}) {
   return {
     ...previous,
     id: uid,
+    authUid: uid,
+    employeeKey: resolveEmployeeDatabaseId({ ...previous, ...data, name, surname, email }, uid),
     name,
     surname,
     email,
@@ -912,6 +1024,8 @@ function buildLocalUserRecord(uid, data = {}, previous = {}) {
   return {
     ...previous,
     id: uid,
+    authUid: uid,
+    employeeKey: resolveEmployeeDatabaseId({ ...previous, ...data, name, surname, email }, uid),
     name,
     surname,
     email,
@@ -1106,6 +1220,7 @@ async function logout() {
   currentUserName = '';
   currentUserUid = '';
   currentUserRole = '';
+  currentUserEmployeeId = '';
   todayShiftPopupShown = false;
   weekOffset = 0;
   shiftsData = [];
@@ -1417,12 +1532,14 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
   const normalizedStoredRole = normalizeStoredRole(appRole || data.role || 'waiter');
   const active = data.active !== false && data.enabled !== false;
   const status = getEmployeeStatusLabel(active);
+  const employeeKey = resolveEmployeeDatabaseId(data, uid);
   const payload = {
     name: data.name,
     surname: data.surname || '',
     email: data.email,
     phone: data.phone || '',
     restaurantRole: data.restaurantRole || '',
+    employeeKey,
     appRole: appRole || '',
     role: normalizedStoredRole,
     status,
@@ -1440,6 +1557,7 @@ async function upsertEmployeeProfile(uid, data, isCreate = false) {
     email: data.email,
     phone: data.phone || '',
     restaurantRole: data.restaurantRole || '',
+    employeeKey,
     appRole: appRole || '',
     role: normalizedStoredRole,
     status,
@@ -1965,6 +2083,11 @@ async function loadCurrentUserProfile(user) {
     }
     currentUserName = normalizeName(rtdbProfile.name) || currentUserName;
     currentUserRole = String(rtdbProfile.role || '').trim();
+    currentUserEmployeeId = resolveEmployeeDatabaseId({
+      employeeKey: rtdbProfile.employeeKey,
+      name: rtdbProfile.name,
+      email: currentUser
+    }, currentUserUid);
     if (!currentUserRole) {
       console.warn('[Profilo] Ruolo mancante nel profilo RTDB per uid:', currentUserUid);
       setStatus('loginStatus', 'Avviso: ruolo non configurato. Contatta un amministratore.', 'info');
@@ -1983,6 +2106,7 @@ async function loadCurrentUserProfile(user) {
     }
     currentUserName = normalizeName(profile.name) || currentUserName;
     currentUserRole = profile.role || 'waiter';
+    currentUserEmployeeId = resolveEmployeeDatabaseId(profile, currentUserUid);
     writeUserToRTDB(user.uid, profile).then(() => {
       console.log('[Profilo] Migrazione a RTDB riuscita.');
     }).catch(e => {
@@ -2001,6 +2125,7 @@ async function loadCurrentUserProfile(user) {
     }
     currentUserName = normalizeName(profile.name) || currentUserName;
     currentUserRole = normalizeStoredRole(profile.appRole || profile.role || 'waiter');
+    currentUserEmployeeId = resolveEmployeeDatabaseId(profile, currentUserUid);
     const resolvedRole = normalizeStoredRole(currentUserRole);
     const resolvedAppRole = normalizeAppRole(profile.appRole || profile.role || currentUserRole) || 'Waiter';
     writeUserToRTDB(user.uid, {
@@ -2017,6 +2142,7 @@ async function loadCurrentUserProfile(user) {
       email: currentUser,
       phone: profile.phone || '',
       restaurantRole: profile.restaurantRole || '',
+      employeeKey: currentUserEmployeeId,
       appRole: resolvedAppRole,
       role: resolvedRole,
       status: getEmployeeStatusLabel(enabled),
@@ -2152,10 +2278,15 @@ function deleteAttendanceLocalEntry(date, uid) {
 
 function getAttendanceEmployees() {
   if (!currentUserUid) return [];
-  if (canViewAllAttendance()) return getShiftEmployees();
-  const ownEmployee = getShiftEmployees().find(employee => employee.id === currentUserUid);
+  if (canViewAllAttendance()) return getAllAttendanceEmployees();
+  const currentEmployeeId = resolveCurrentEmployeeAttendanceId();
+  const ownEmployee = getAllAttendanceEmployees().find(employee => employee.id === currentEmployeeId || employee.authUid === currentUserUid);
   if (ownEmployee) return [ownEmployee];
-  return [{ id: currentUserUid, name: currentUserName || deriveNameFromEmail(currentUser) || currentUserUid }];
+  return [{
+    id: currentEmployeeId || resolveEmployeeDatabaseId({ name: currentUserName, email: currentUser }, currentUserUid) || currentUserUid,
+    authUid: currentUserUid,
+    name: currentUserName || deriveNameFromEmail(currentUser) || currentUserUid
+  }];
 }
 
 function getCurrentAttendanceWeekDates() {
@@ -2369,6 +2500,8 @@ function applyAttendanceWeekEntries(weekStart, weekData) {
 async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDates()) {
   const weekStart = weekDates?.[0]?.date || '';
   const weekEnd = weekDates?.[6]?.date || weekStart;
+  const currentEmployeeId = resolveCurrentEmployeeAttendanceId();
+  const attendanceLookup = buildAttendanceEmployeeLookup();
   if (!weekStart) return { weekStart: '', weekData: {} };
   const weekData = {};
   const weekQuery = getAttendanceWeekQuery(weekDates);
@@ -2382,15 +2515,26 @@ async function readAttendanceWeekEntries(weekDates = getCurrentAttendanceWeekDat
       const isWeekDate = date >= weekStart && date <= weekEnd;
       if (!isWeekDate) return false;
       if (canViewAllAttendance()) return true;
-      return String(entry?.employeeId || entry?.uid || '') === currentUserUid;
+      const employee = findAttendanceEmployeeByAlias(entry?.employeeId || entry?.uid || '', entry?.employeeName || '', attendanceLookup);
+      const entryEmployeeId = normalizeName(employee?.id || entry?.employeeId || entry?.uid || '');
+      return Boolean(currentEmployeeId) && entryEmployeeId === currentEmployeeId;
     });
   console.log("CARICO ENTRATA USCITA", records);
   records.forEach(record => {
     const date = String(record?.date || '');
-    const uid = String(record?.employeeId || record?.uid || '');
+    const employee = findAttendanceEmployeeByAlias(record?.employeeId || record?.uid || '', record?.employeeName || '', attendanceLookup);
+    const uid = String(employee?.id || record?.employeeId || record?.uid || '');
     if (!date || !uid) return;
     if (!weekData[date]) weekData[date] = {};
-    weekData[date][uid] = record;
+    const existingRecord = weekData[date][uid];
+    const normalizedRecord = normalizeAttendanceRecord(record, {
+      uid,
+      date,
+      weekStart,
+      employeeName: employee?.name || record?.employeeName || ''
+    });
+    const rawEmployeeId = normalizeName(String(record?.employeeId || record?.uid || ''));
+    if (shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, uid)) weekData[date][uid] = normalizedRecord;
   });
   return { weekStart, weekData };
 }
@@ -2403,12 +2547,18 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
     return cached;
   }
   let dayQuery;
+  const currentEmployeeId = resolveCurrentEmployeeAttendanceId();
+  const attendanceLookup = buildAttendanceEmployeeLookup();
   if (canViewAllAttendance()) {
     dayQuery = query(timeEntryCollection(), where('date', '==', date));
   } else {
+    if (!currentEmployeeId) {
+      console.warn('[Attendance] Lettura giorno saltata: employeeId corrente mancante.');
+      return null;
+    }
     dayQuery = query(
       timeEntryCollection(),
-      where('employeeId', '==', currentUserUid)
+      where('employeeId', '==', currentEmployeeId)
     );
   }
   const daySnap = await getDocs(dayQuery);
@@ -2416,9 +2566,18 @@ async function readAttendanceDayEntries(date, { forceRefresh = false } = {}) {
   daySnap.docs.forEach(d => {
     const record = d.data() || {};
     if (String(record.date || '') !== date) return;
-    const uid = String(record.employeeId || record.uid || '');
+    const employee = findAttendanceEmployeeByAlias(record.employeeId || record.uid || '', record.employeeName || '', attendanceLookup);
+    const uid = String(employee?.id || record.employeeId || record.uid || '');
     if (!uid) return;
-    dayData[uid] = normalizeAttendanceRecord(record, { uid, date, weekStart });
+    const existingRecord = dayData[uid];
+    const normalizedRecord = normalizeAttendanceRecord(record, {
+      uid,
+      date,
+      weekStart,
+      employeeName: employee?.name || record.employeeName || ''
+    });
+    const rawEmployeeId = normalizeName(String(record.employeeId || record.uid || ''));
+    if (shouldReplaceAttendanceRecord(existingRecord, rawEmployeeId, uid)) dayData[uid] = normalizedRecord;
   });
   if (Object.keys(dayData).length) {
     if (attendanceLoadedWeekStart === weekStart) {
@@ -2462,7 +2621,7 @@ function buildAttendanceRecord({ uid, employeeName, date, weekStart, rawText, en
   };
 }
 
-function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = '' } = {}) {
+function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = '', employeeName = '' } = {}) {
   const source = (record && typeof record === 'object') ? { ...record } : {};
   const resolvedUid = String(source.employeeId || source.uid || uid || '');
   const resolvedDate = String(source.date || date || '');
@@ -2506,7 +2665,7 @@ function normalizeAttendanceRecord(record, { uid = '', date = '', weekStart = ''
     ...source,
     uid: resolvedUid,
     employeeId: resolvedUid,
-    employeeName: String(source.employeeName || ''),
+    employeeName: String(source.employeeName || employeeName || ''),
     date: resolvedDate,
     weekStart: resolvedWeekStart,
     rawText,
@@ -3811,7 +3970,7 @@ function hours() {
   const canEdit = canViewGlobalTipsData();
   // Build canonical employee map for ID lookup (matches attendance storage keys)
   const canonicalEmpMap = new Map(
-    getShiftEmployees().map(e => [e.name.toLowerCase(), e.id])
+    getAllAttendanceEmployees().map(e => [e.name.toLowerCase(), e.id])
   );
   let html = '<tr><th>Dipendente</th><th>Ore</th><th>Cash (€/ora)</th><th>Carta (€/ora)</th><th>Totale (€/ora)</th></tr>';
   
@@ -3901,7 +4060,7 @@ async function populateHoursFromAttendance(date, options = {}) {
   const { forceRefresh = false, silent = false } = options;
   if (!date || !currentUserUid || !canViewGlobalTipsData()) return;
   const weekStart = getWeekStartISO(date);
-  console.log('[populateHoursFromAttendance] date:', date, '| weekStart:', weekStart, '| uid:', currentUserUid);
+  console.log('[populateHoursFromAttendance] date:', date, '| weekStart:', weekStart, '| employeeId:', resolveCurrentEmployeeAttendanceId());
   try {
     const dayAttendance = await readAttendanceDayEntries(date, { forceRefresh });
     console.log('[populateHoursFromAttendance] dayAttendance:', dayAttendance ? JSON.stringify(dayAttendance) : null);

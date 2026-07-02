@@ -96,9 +96,43 @@ service cloud.firestore {
       return canManageShifts() || isUserManagerAdminOrResponsible();
     }
 
+    function employeeProfileEmployeeKey() {
+      return employeeExists() && employeeProfile().data.employeeKey is string
+        ? employeeProfile().data.employeeKey
+        : '';
+    }
+
+    function userProfileEmployeeKey() {
+      return userProfileExists() && userProfile().data.employeeKey is string
+        ? userProfile().data.employeeKey
+        : '';
+    }
+
+    function employeeProfileName() {
+      return employeeExists() && employeeProfile().data.name is string
+        ? employeeProfile().data.name
+        : '';
+    }
+
+    function userProfileName() {
+      return userProfileExists() && userProfile().data.name is string
+        ? userProfile().data.name
+        : '';
+    }
+
+    function matchesCurrentEmployeeId(entryEmployeeId) {
+      return entryEmployeeId is string && (
+        entryEmployeeId == employeeProfileEmployeeKey() ||
+        entryEmployeeId == userProfileEmployeeKey() ||
+        entryEmployeeId == employeeProfileName() ||
+        entryEmployeeId == userProfileName() ||
+        entryEmployeeId == request.auth.uid
+      );
+    }
+
     match /timeEntries/{entryId} {
       allow read: if signedIn() && employeeEnabled() &&
-        (isTimeEntryManager() || resource.data.employeeId == request.auth.uid);
+        (isTimeEntryManager() || matchesCurrentEmployeeId(resource.data.employeeId));
       allow create, update: if signedIn() && employeeEnabled() && isTimeEntryManager() &&
         request.resource.data.date is string &&
         request.resource.data.employeeId is string &&

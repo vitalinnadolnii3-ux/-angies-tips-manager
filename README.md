@@ -27,7 +27,7 @@ Per la gestione dipendenti admin dall'app:
 - collezione Firestore: `restaurants/angies/employees/{uid}` con campi `email`, `name`, `role`, `enabled`, `createdAt`, `updatedAt`
 - utenti RTDB: `users/{uid}` con campi `email`, `name`, `role`, `active` usati per RBAC di turni/attendance
 - turni settimanali: `restaurants/angies/shifts/{shiftId}` con campi `uid`, `date`, `shiftText`, `startTime`, `endTime`, `role`, `notes`, `isRestDay`, `createdAt`, `updatedAt`
-- entrata/uscita Firestore: `timeEntries/{date_employeeId}` con campi `date`, `employeeId`, `employeeName`, `oreContratto`, `entrata`, `uscita`, `oreCalcolate`, `updatedAt` (più campi tecnici opzionali come `entryTime1`, `exitTime1`, `workedMinutes`, `notes`)
+- entrata/uscita Firestore: `timeEntries/{date_employeeId}` con campi `date`, `employeeId`, `employeeName`, `oreContratto`, `entrata`, `uscita`, `oreCalcolate`, `updatedAt` (più campi tecnici opzionali come `entryTime1`, `exitTime1`, `workedMinutes`, `notes`); `employeeId` deve essere l'ID del dipendente salvato nel database dell'app (o un ID dipendente univoco persistente), non l'UID di Firebase Authentication
 - opzionale (consigliato) Callable Functions:
   - `createEmployeeAuthUser`
   - `updateEmployeeAuthUser`
